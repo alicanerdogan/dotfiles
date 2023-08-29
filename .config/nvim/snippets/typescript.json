@@ -1,0 +1,116 @@
+{
+  "Util: sleep": {
+    "prefix": "%sleep",
+    "body": [
+      "await new Promise(r => setTimeout(r, $1));",
+      "$2"
+    ],
+    "description": ""
+  },
+  "Util: debug": {
+    "prefix": "%dbg",
+    "body": [
+      "console.debug({${1}})",
+      ""
+    ],
+    "description": ""
+  },
+  "Test: Describe": {
+    "prefix": "%desc",
+    "body": [
+      "describe('${1}', () => {",
+      "  ${2}",
+      "});",
+      ""
+    ],
+    "description": ""
+  },
+  "Test: Test Case": {
+    "prefix": "%it",
+    "body": [
+      "it('should ${1}', async () => {",
+      "  ${2}",
+      "});",
+      ""
+    ],
+    "description": ""
+  },
+  "React: Component": {
+    "prefix": "%comp",
+    "body": [
+      "export interface ${1:Component}Props {${2}}",
+      "",
+      "export const ${1:Component}: React.FC<${1:Component}Props> = () => {",
+      "  return null;",
+      "};",
+      "",
+      "${1:Component}.displayName = '${1:Component}';",
+      "${3}"
+    ],
+    "description": "Component without style"
+  },
+  "React: Styled Component": {
+    "prefix": "%scomp",
+    "body": [
+      "import { style } from \"react-windward\";",
+      "",
+      "const ${1:ElementName}Container = style(\"${2:div}\")`",
+      "`;",
+      "",
+      "export interface ${1:ElementName}Props {}",
+      "",
+      "export const ${1:ElementName}: React.FC<${1:ElementName}Props> = () => {",
+      "  return (",
+      "    <${1:ElementName}Container>",
+      "    </${1:ElementName}Container>",
+      "  );",
+      "};",
+      ""
+    ]
+  },
+  "React: Styled Primitive": {
+    "prefix": "%rsp",
+    "body": [
+      "const ${1:Component} = styled(\"${2}\")(",
+      "  `",
+      "  ${3}",
+      "  `",
+      ");",
+      "${4}"
+    ],
+    "description": "Creates a component with style"
+  },
+  "React: Styled Component": {
+    "prefix": "%rsc",
+    "body": [
+      "const ${1:ElementName} = styleComponent(${2:ElementType})`",
+      "  ${3}",
+      "`;",
+
+      ""
+    ],
+    "description": ""
+  },
+  "React: UseState": {
+    "prefix": "%rhs",
+    "body": [
+      "const [${1:state}, set${2:state_setter}] = React.useState(${3:state_value});"
+    ],
+    "description": "State Hook"
+  },
+  "React: UseCallback": {
+    "prefix": "%rhc",
+    "body": [
+      "const ${1:callback_name} = React.useCallback((${2:args}) => {",
+      "  ${3:body}",
+      "}, [${4:inputs}]);"
+    ],
+    "description": "Callback Hook"
+  },
+  "React: UseEffect": {
+    "prefix": "%rhe",
+    "body": ["React.useEffect(() => {${1:body}}, [${2:inputs}]);"],
+    "description": "EffectHook"
+  }
+}
+

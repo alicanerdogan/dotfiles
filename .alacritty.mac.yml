@@ -1,0 +1,39 @@
+window:
+  startup_mode: Maximized
+  decorations: none
+
+colors:
+  primary:
+    background: "0x191919"
+    foreground: "0xeaeaea"
+
+  cursor:
+    text: "0xf1c1c1"
+    cursor: "0xff2600"
+
+mouse:
+  hide_when_typing: true
+
+shell:
+  program: /opt/homebrew/bin/tmux
+  args:
+    - new-session
+    - -A
+    - -D
+    - -s
+    - main
+
+font:
+  size: 14.0
+
+  normal:
+    family: JetBrainsMono Nerd Font
+    style: ExtraLight
+
+  bold:
+    family: JetBrainsMono Nerd Font
+    style: Light
+
+  italic:
+    family: FiraCode Nerd Font Mono
+    style: Italic

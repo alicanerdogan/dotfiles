@@ -1,0 +1,41 @@
+window:
+  startup_mode: fullscreen
+  decorations: None
+
+colors:
+  primary:
+    background: "0x191919"
+    foreground: "0xeaeaea"
+
+  cursor:
+    text: "0xf1c1c1"
+    cursor: "0xff2600"
+
+mouse:
+  hide_when_typing: false
+
+env:
+  WAYLAND_DISPLAY: "1"
+
+shell:
+  program: /home/linuxbrew/.linuxbrew/bin/tmux
+  args:
+    - new-session
+    - -A
+    - -D
+    - -s
+    - main
+
+font:
+  normal:
+    family: JetBrainsMono Nerd Font
+    style: ExtraLight
+
+  bold:
+    family: JetBrainsMono Nerd Font
+    style: Light
+
+  italic:
+    family: Fira Mono for Powerline
+    style: Italic
+

@@ -1,0 +1,9 @@
+[user]
+	name = Alican
+	email = aerdogan07@gmail.com
+[core]
+	editor = nvim
+[pull]
+	rebase = true
+[init]
+	defaultBranch = main

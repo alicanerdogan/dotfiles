@@ -32,6 +32,7 @@ brew "wget"
 brew "yarn"
 brew "youtube-dl"
 brew "zsh-you-should-use"
+brew "zsh-vi-mode"
 
 tap "homebrew/cask-fonts"
 brew "font-jetbrains-mono-nerd-font"

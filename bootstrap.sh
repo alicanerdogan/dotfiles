@@ -1,5 +1,7 @@
 #!/bin/bash
 
+os="$(uname)"
+
 if [[ $os == "Darwin" ]]; then
   # update config files
   ./sync.sh

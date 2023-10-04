@@ -24,7 +24,6 @@ alias gcm="git checkout main"
 
 function zvm_after_init() {
   [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
-  eval "$(jump shell)"
   eval "$(starship init zsh)"
 }
 

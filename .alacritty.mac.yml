@@ -35,5 +35,5 @@ font:
     style: Light
 
   italic:
-    family: FiraCode Nerd Font Mono
+    family: JetBrainsMono Nerd Font
     style: Italic

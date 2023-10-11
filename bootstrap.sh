@@ -15,6 +15,8 @@ if [[ $os == "Darwin" ]]; then
   brew bundle
   # install rust
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+  # install latest node
+  fnm install --latest
 
   ## Download apps
   # Alacritty

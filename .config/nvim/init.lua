@@ -163,7 +163,7 @@ local function set_up_nvim_only_plugins(plugins)
   table.insert(plugins, { "nvim-telescope/telescope-ui-select.nvim" })
   table.insert(plugins, {
     "nvim-telescope/telescope.nvim",
-    tag = '0.1.1',
+    tag = '0.1.4',
     dependencies = {
       "nvim-lua/plenary.nvim",
       "nvim-treesitter/nvim-treesitter",
@@ -1055,13 +1055,13 @@ local function set_up_nvim_only_keybindings()
 
   -- MARKING
   -- Mark a file
-  vim.keymap.set('n', '<leader>mm', ':lua require("harpoon.mark").add_file()<CR>', { noremap = true, desc = "" })
+  vim.keymap.set('n', '<leader>mm', ':lua require("harpoon.mark").add_file()<CR>', { noremap = true, desc = "Add current buffer to harpoon" })
   -- Unmark a file
-  vim.keymap.set('n', '<leader>mu', ':lua require("harpoon.mark").rm_file()<CR>', { noremap = true, desc = "" })
+  vim.keymap.set('n', '<leader>mu', ':lua require("harpoon.mark").rm_file()<CR>', { noremap = true, desc = "Remove current buffer to harpoon" })
   -- Go to next mark
-  vim.keymap.set('n', '<leader>mn', ':lua require("harpoon.ui").nav_next()<CR>', { noremap = true, desc = "" })
+  vim.keymap.set('n', '<leader>mn', ':lua require("harpoon.ui").nav_next()<CR>', { noremap = true, desc = "Go to next mark in the harpoon list" })
   -- Go to previous mark
-  vim.keymap.set('n', '<leader>mp', ':lua require("harpoon.ui").nav_prev()<CR>', { noremap = true, desc = "" })
+  vim.keymap.set('n', '<leader>mp', ':lua require("harpoon.ui").nav_prev()<CR>', { noremap = true, desc = "Go to previous mark in the harpoon list" })
 
   -- toggles the terminal
   vim.keymap.set('n', '<C-t>', ':SmartToggleTerm<CR>', { noremap = true, desc = "Toggle terminal" })

@@ -17,7 +17,6 @@ end
 
 -- Utility functions end
 
-
 local function set_up_global_config()
   vim.opt.scrolloff = 8
   vim.opt.number = true    -- show line numbers
@@ -282,6 +281,28 @@ local function set_up_nvim_only_plugins(plugins)
           vim.keymap.set('n', '<C-t>', ':SmartToggleTerm<CR>', { desc = "Toggle terminal", noremap = true })
         end
       })
+
+      -- Exit NvimTree when the active buffer changes
+      vim.api.nvim_create_autocmd({ "BufLeave", "BufWinLeave" }, {
+        pattern = "NvimTree_*",
+        callback = function()
+          local tree_wins = {}
+          local floating_wins = {}
+          local wins = vim.api.nvim_list_wins()
+          for _, w in ipairs(wins) do
+            local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w))
+            if vim.api.nvim_win_get_config(w).relative ~= '' then
+              table.insert(floating_wins, w)
+            elseif bufname:match("NvimTree_") == nil then
+              table.insert(tree_wins, w)
+            end
+          end
+          if #tree_wins > 0 then
+            -- Should quit, so we close all invalid windows.
+            vim.cmd(':NvimTreeClose')
+          end
+        end
+      })
     end,
   })
 
@@ -484,7 +505,6 @@ local function set_up_nvim_only_plugins(plugins)
   })
 
   table.insert(plugins, {
-
     'VonHeikemen/lsp-zero.nvim',
     branch = 'v2.x',
     dependencies = {
@@ -704,119 +724,27 @@ local function set_up_nvim_only_plugins(plugins)
   })
 
   table.insert(plugins, {
-    "NeogitOrg/neogit",
+    "lewis6991/gitsigns.nvim",
     dependencies = {
-      "nvim-lua/plenary.nvim",         -- required
-      "nvim-telescope/telescope.nvim", -- optional
-      "sindrets/diffview.nvim",        -- optional
+      'sindrets/diffview.nvim'
     },
     config = function()
-      local neogit = require("neogit")
-
-      neogit.setup {
-        -- Change the default way of opening neogit
-        kind = "vsplit",
-        -- The time after which an output console is shown for slow running commands
-        console_timeout = 2000,
-        -- Automatically show console if a command takes more than console_timeout milliseconds
-        auto_show_console = true,
-        -- Scope persisted settings on a per-project basis
-        use_per_project_settings = true,
-        -- Array-like table of settings to never persist. Uses format "Filetype--cli-value"
-        --   ie: `{ "NeogitCommitPopup--author", "NeogitCommitPopup--no-verify" }`
-        ignored_settings = {},
-        -- Change the default way of opening the commit popup
-        commit_popup = {
-          kind = "vsplit",
-        },
-        -- Change the default way of opening the preview buffer
-        preview_buffer = {
-          kind = "vsplit",
-        },
-        -- Change the default way of opening popups
-        popup = {
-          kind = "vsplit",
-        },
-        -- customize displayed signs
-        signs = {
-          -- { CLOSED, OPENED }
-          section = { ">", "v" },
-          item = { ">", "v" },
-          hunk = { "", "" },
-        },
-        -- Each Integration is auto-detected through plugin presence. Disabled by setting to `false`
-        -- integrations = {
-        --   -- If enabled, use telescope for menu selection rather than vim.ui.select.
-        --   -- Allows multi-select and some things that vim.ui.select doesn't.
-        --   telescope = nil,
-        --
-        --   -- Neogit only provides inline diffs. If you want a more traditional way to look at diffs, you can use `sindrets/diffview.nvim`.
-        --   -- The diffview integration enables the diff popup, which is a wrapper around `sindrets/diffview.nvim`.
-        --   --
-        --   -- Requires you to have `sindrets/diffview.nvim` installed.
-        --   diffview = nil,
-        -- },
-
-        -- Setting any section to `false` will make the section not render at all
-        sections = {
-          untracked = {
-            folded = false
-          },
-          unstaged = {
-            folded = false
-          },
-          staged = {
-            folded = false
-          },
-          stashes = {
-            folded = true
-          },
-          unpulled = {
-            hidden = true,
-            folded = true
-          },
-          unmerged = {
-            hidden = true,
-            folded = false
-          },
-          recent = {
-            folded = true
-          },
-        },
-      }
-
-      vim.api.nvim_create_user_command('NeogitToggle',
+      vim.keymap.set('n', '<leader>gh', ':DiffviewFileHistory %<CR>', { desc = "Git: Show file history" })
+      vim.api.nvim_create_user_command('ToggleDiffview',
         function()
-          local get_neogit_window = function()
-            for _, tab in ipairs(vim.api.nvim_list_tabpages()) do
-              for _, win in pairs(vim.api.nvim_tabpage_list_wins(tab)) do
-                local buf = vim.api.nvim_win_get_buf(win)
-                local buffName = vim.api.nvim_buf_get_name(buf)
-                local neogit_buff_name_postfix = "NeogitStatus"
-                if vim.endswith(buffName, neogit_buff_name_postfix) then
-                  return win
-                end
-              end
+          local currentTab = vim.api.nvim_get_current_tabpage()
+          for _, win in pairs(vim.api.nvim_tabpage_list_wins(currentTab)) do
+            local buf = vim.api.nvim_win_get_buf(win)
+            local buffName = vim.api.nvim_buf_get_name(buf)
+            if vim.startswith(buffName, "diffview://") or vim.endswith(buffName, "DiffviewFilePanel") then
+              vim.cmd("tabclose")
+              return
             end
-            return nil
           end
-
-          local win = get_neogit_window()
-          if win == nil then
-            -- show the neogit
-            vim.cmd(':Neogit')
-          else
-            -- hide the neogit
-            vim.api.nvim_win_close(win, false)
-          end
+          vim.cmd(":DiffviewOpen")
         end,
         { nargs = 0 })
-    end,
-  })
 
-  table.insert(plugins, {
-    "lewis6991/gitsigns.nvim",
-    config = function()
       require('gitsigns').setup {
         signs                        = {
           add          = { text = '│' },
@@ -884,8 +812,6 @@ local function set_up_nvim_only_plugins(plugins)
           map('n', '<leader>glb', function() gs.blame_line { full = true } end, { desc = "Git: Blame line" })
           map('n', '<leader>gb', gs.toggle_current_line_blame, { desc = "Git: Toggle blame line" })
           map('n', '<leader>gd', gs.diffthis, { desc = "Git: Diff current" })
-          map('n', '<leader>gD', ':DiffviewOpen<CR>', { desc = "Git: Show diff view" })
-          map('n', '<leader>gc', ':Neogit commit<CR>', { desc = "Git: Commit" })
         end,
       }
     end,
@@ -1055,20 +981,24 @@ local function set_up_nvim_only_keybindings()
 
   -- MARKING
   -- Mark a file
-  vim.keymap.set('n', '<leader>mm', ':lua require("harpoon.mark").add_file()<CR>', { noremap = true, desc = "Add current buffer to harpoon" })
+  vim.keymap.set('n', '<leader>mm', ':lua require("harpoon.mark").add_file()<CR>',
+    { noremap = true, desc = "Add current buffer to harpoon" })
   -- Unmark a file
-  vim.keymap.set('n', '<leader>mu', ':lua require("harpoon.mark").rm_file()<CR>', { noremap = true, desc = "Remove current buffer to harpoon" })
+  vim.keymap.set('n', '<leader>mu', ':lua require("harpoon.mark").rm_file()<CR>',
+    { noremap = true, desc = "Remove current buffer to harpoon" })
   -- Go to next mark
-  vim.keymap.set('n', '<leader>mn', ':lua require("harpoon.ui").nav_next()<CR>', { noremap = true, desc = "Go to next mark in the harpoon list" })
+  vim.keymap.set('n', '<leader>mn', ':lua require("harpoon.ui").nav_next()<CR>',
+    { noremap = true, desc = "Go to next mark in the harpoon list" })
   -- Go to previous mark
-  vim.keymap.set('n', '<leader>mp', ':lua require("harpoon.ui").nav_prev()<CR>', { noremap = true, desc = "Go to previous mark in the harpoon list" })
+  vim.keymap.set('n', '<leader>mp', ':lua require("harpoon.ui").nav_prev()<CR>',
+    { noremap = true, desc = "Go to previous mark in the harpoon list" })
 
   -- toggles the terminal
   vim.keymap.set('n', '<C-t>', ':SmartToggleTerm<CR>', { noremap = true, desc = "Toggle terminal" })
   -- toggles the trouble
   vim.keymap.set('n', '<C-j>', ':TroubleToggle<CR>', { noremap = true, desc = "Toggle actions view" })
-  -- toggles git status
-  vim.keymap.set('n', '<C-g>', ':NeogitToggle<CR>', { noremap = true, desc = "Toggle git overview" })
+  -- toggle the diffview
+  vim.keymap.set('n', '<C-g>', ':ToggleDiffview<CR>', { noremap = true, desc = "Toggle git overview" })
 
   -- REFACTORING
   -- code actions

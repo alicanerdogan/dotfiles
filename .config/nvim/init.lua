@@ -19,13 +19,14 @@ end
 
 local function set_up_global_config()
   vim.opt.scrolloff = 8
-  vim.opt.number = true    -- show line numbers
+  vim.opt.number = true     -- show line numbers
   vim.opt.relativenumber = true
-  vim.opt.tabstop = 2      -- number of spaces to a TAB counts for
+  vim.opt.tabstop = 2       -- number of spaces to a TAB counts for
   vim.opt.softtabstop = 2
-  vim.opt.shiftwidth = 2   -- number of spaces a use for each step of indent
-  vim.opt.expandtab = true -- expand tabs into spaces
+  vim.opt.shiftwidth = 2    -- number of spaces a use for each step of indent
+  vim.opt.expandtab = true  -- expand tabs into spaces
   vim.opt.smartindent = true
+  vim.opt.cursorline = true -- Adds a highlight to the current line
 
   local os_uname = vim.loop.os_uname().sysname
   if os_uname == "Darwin" then
@@ -215,9 +216,9 @@ local function set_up_nvim_only_plugins(plugins)
     },
     config = function()
       require("tokyonight").setup({
-        style = "night",
       })
       -- vim.cmd[[colorscheme tokyonight]]
+      -- vim.opt.background = 'light'
     end,
   })
 
@@ -834,6 +835,39 @@ local function set_up_nvim_only_plugins(plugins)
       require("telescope").load_extension('harpoon')
     end,
   })
+
+  table.insert(plugins, {
+    "chrisgrieser/nvim-spider",
+    config = function()
+      require("spider").setup {
+        skipInsignificantPunctuation = false,
+      }
+      vim.keymap.set(
+        { "n", "o", "x" },
+        "w",
+        "<cmd>lua require('spider').motion('w')<CR>",
+        { desc = "Spider-w" }
+      )
+      vim.keymap.set(
+        { "n", "o", "x" },
+        "e",
+        "<cmd>lua require('spider').motion('e')<CR>",
+        { desc = "Spider-e" }
+      )
+      vim.keymap.set(
+        { "n", "o", "x" },
+        "b",
+        "<cmd>lua require('spider').motion('b')<CR>",
+        { desc = "Spider-b" }
+      )
+      vim.keymap.set(
+        { "n", "o", "x" },
+        "ge",
+        "<cmd>lua require('spider').motion('ge')<CR>",
+        { desc = "Spider-ge" }
+      )
+    end,
+  })
 end
 
 local function set_up_vscode_plugins(plugins)
@@ -992,6 +1026,9 @@ local function set_up_nvim_only_keybindings()
   -- Go to previous mark
   vim.keymap.set('n', '<leader>mp', ':lua require("harpoon.ui").nav_prev()<CR>',
     { noremap = true, desc = "Go to previous mark in the harpoon list" })
+  -- Delete all marks
+  vim.keymap.set('n', '<leader>mD', ':lua require("harpoon.mark").clear_all()<CR>',
+    { noremap = true, desc = "Remove all marks from the harpoon list" })
 
   -- toggles the terminal
   vim.keymap.set('n', '<C-t>', ':SmartToggleTerm<CR>', { noremap = true, desc = "Toggle terminal" })
@@ -1018,6 +1055,10 @@ local function set_up_nvim_only_keybindings()
   vim.keymap.set('n', '<leader>jr', '<Cmd>lua vim.lsp.buf.references()<CR>', { desc = "List references" })
   -- to explorer
   vim.keymap.set('n', '<leader>je', ':NvimTreeFindFile<CR>', { desc = "Jump to current file in nvim-tree" })
+  -- quickfix - next in the list
+  vim.keymap.set('n', '<leader>jn', '<Cmd>:cn<CR>', { noremap = true, desc = "Jump to next mark into quickfix" })
+  -- quickfix - previous in the list
+  vim.keymap.set('n', '<leader>jp', '<Cmd>:cn<CR>', { noremap = true, desc = "Jump to previous mark into quickfix" })
 
   -- PEEK/PREVIEW
   -- to docs

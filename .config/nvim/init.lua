@@ -422,6 +422,7 @@ local function set_up_nvim_only_plugins(plugins)
         },
         autotag = {
           enable = true,
+          enable_close_on_slash = true,
           filetypes = {
             'html', 'javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'svelte', 'vue', 'tsx', 'jsx',
             'rescript',

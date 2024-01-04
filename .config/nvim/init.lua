@@ -1,4 +1,20 @@
 -- Utility functions
+local user_module = nil
+local function get_user_module()
+  if user_module ~= nil then
+    return user_module
+  end
+
+  local status, module = pcall(require, "user")
+
+  if status then
+    user_module = module
+    return module
+  else
+    return nil
+  end
+end
+
 function did_editor_open_with_directory()
   local args = vim.fn.argv()
   if #args < 1 then
@@ -19,14 +35,15 @@ end
 
 local function set_up_global_config()
   vim.opt.scrolloff = 8
-  vim.opt.number = true     -- show line numbers
+  vim.opt.number = true         -- show line numbers
   vim.opt.relativenumber = true
-  vim.opt.tabstop = 2       -- number of spaces to a TAB counts for
+  vim.opt.tabstop = 2           -- number of spaces to a TAB counts for
   vim.opt.softtabstop = 2
-  vim.opt.shiftwidth = 2    -- number of spaces a use for each step of indent
-  vim.opt.expandtab = true  -- expand tabs into spaces
+  vim.opt.shiftwidth = 2        -- number of spaces a use for each step of indent
+  vim.opt.expandtab = true      -- expand tabs into spaces
   vim.opt.smartindent = true
-  vim.opt.cursorline = true -- Adds a highlight to the current line
+  vim.opt.cursorline = true     -- Adds a highlight to the current line
+  vim.opt.virtualedit = "block" -- Allow cursor to move where there is no text in visual block mode
 
   local os_uname = vim.loop.os_uname().sysname
   if os_uname == "Darwin" then
@@ -55,6 +72,41 @@ local function set_up_nvim_only_config()
     command = [[silent !tmux set status off]],             -- This is not perfect, if another vim instance is running, it doesn't work
   })
 
+  -- Open with the most recent file
+  vim.api.nvim_create_autocmd({ "VimEnter" }, {
+    group = vim.api.nvim_create_augroup('BootOpenRecent', {}), -- this is not required, but it is possible to group certain autocmd together with this
+    pattern = { '*' },                                         -- Just to execute the command when matching all files
+    callback = function()
+      if (not did_editor_open_with_directory()) then
+        return
+      end
+      local Path = require('plenary.path')
+      local args = vim.fn.argv()
+      local project_dir_path = Path:new({ args[1] }):absolute()
+      if vim.endswith(project_dir_path, "/NvimTree_1") then
+        project_dir_path = string.sub(project_dir_path, 1, #project_dir_path - 11)
+      end
+
+      local recent_files = vim.v.oldfiles
+      for i = 1, #recent_files do
+        local recent_file = recent_files[i]
+        local recent_file_path = Path:new({ recent_file }):absolute()
+
+        if vim.startswith(recent_file_path, project_dir_path) then
+          if not string.find(recent_file_path, "/diffview") then
+            if not vim.endswith(recent_file_path, "/NvimTree_1") then
+              if project_dir_path ~= recent_file_path then
+                -- require("nvim-tree.api").tree.close_in_all_tabs()
+                -- vim.cmd(":e " .. recent_file_path)
+                return
+              end
+            end
+          end
+        end
+      end
+    end,
+  })
+
   vim.api.nvim_create_user_command('PasteInline',
     function()
       local reg_value = vim.fn.getreg('"')
@@ -64,6 +116,13 @@ local function set_up_nvim_only_config()
       vim.fn.setreg('a', reg_value)
       -- Paste the contents of register 'a' at the cursor position in your buffer
       vim.api.nvim_command("normal! \"ap")
+    end,
+    { nargs = 0 })
+
+  -- Copy relative path of current file to clipboard
+  vim.api.nvim_create_user_command('CopyRelPath',
+    function()
+      vim.api.nvim_call_function("setreg", { "+", vim.fn.fnamemodify(vim.fn.expand("%"), ":.") })
     end,
     { nargs = 0 })
 
@@ -108,10 +167,21 @@ local function set_up_vscode_config()
 end
 
 local function set_up_config()
+  local user = get_user_module()
+
   set_up_global_config()
+  if user ~= nil then
+    user.set_up_global_config()
+  end
   if vim.g.vscode then
     set_up_vscode_config()
+    if user ~= nil then
+      user.set_up_vscode_config()
+    end
   else
+    if user ~= nil then
+      user.set_up_nvim_only_config()
+    end
     set_up_nvim_only_config()
   end
 end
@@ -186,13 +256,27 @@ local function set_up_nvim_only_plugins(plugins)
             ignore_patterns = { "/tmp/", ".git/" },
             only_cwd = true,
             show_current_file = false,
-          }
+          },
+          live_grep_args = {
+            auto_quoting = true, -- enable/disable auto-quoting
+            mappings = {         -- extend mappings
+              i = {
+                ["<C-k>"] = require("telescope-live-grep-args.actions").quote_prompt({
+                  postfix =
+                  " -g !*.test.ts -g !*.md -g !*.graphql -g !*.json -g !*.lock -g !*.mock"
+                }),
+              },
+            },
+          },
         },
         pickers = {
           oldfiles = {
             only_cwd = true,
-          }
-        }
+          },
+          find_files = {
+            find_command = { 'git', 'ls-files', '--exclude-standard', '--others', '--cached', '--', '.' },
+          },
+        },
       })
 
       -- To get fzf loaded and working with telescope, you need to call
@@ -597,6 +681,12 @@ local function set_up_nvim_only_plugins(plugins)
   })
 
   table.insert(plugins, {
+    "pmizio/typescript-tools.nvim",
+    dependencies = { "nvim-lua/plenary.nvim", "neovim/nvim-lspconfig" },
+    opts = {},
+  })
+
+  table.insert(plugins, {
     'mhartington/formatter.nvim',
     config = function()
       local format = require("formatter")
@@ -965,13 +1055,25 @@ local function set_up_plugins()
 
   vim.opt.rtp:prepend(lazypath)
 
+  local user = get_user_module()
+
   local plugins = {}
 
   set_up_global_plugins(plugins)
+  if user ~= nil then
+    user.set_up_global_plugins(plugins)
+  end
+
   if vim.g.vscode then
     set_up_vscode_plugins(plugins)
+    if user ~= nil then
+      user.set_up_vscode_plugins(plugins)
+    end
   else
     set_up_nvim_only_plugins(plugins)
+    if user ~= nil then
+      user.set_up_nvim_only_plugins(plugins)
+    end
   end
 
   require("lazy").setup(plugins)
@@ -1060,15 +1162,23 @@ local function set_up_nvim_only_keybindings()
   vim.keymap.set('n', '<leader>jn', '<Cmd>:cn<CR>', { noremap = true, desc = "Jump to next mark into quickfix" })
   -- quickfix - previous in the list
   vim.keymap.set('n', '<leader>jp', '<Cmd>:cn<CR>', { noremap = true, desc = "Jump to previous mark into quickfix" })
+  -- linter warnings and errors
+  vim.keymap.set('n', '<leader>jl', '<Cmd>lua vim.diagnostic.goto_next()<CR>', { desc = "Jump to next error/warning" })
 
   -- PEEK/PREVIEW
   -- to docs
   vim.keymap.set('n', '<leader>pd', '<Cmd>lua vim.lsp.buf.signature_help()<CR>', { desc = "Preview symbol signature" })
   -- type definition
   vim.keymap.set('n', '<leader>ph', '<Cmd>lua vim.lsp.buf.hover()<CR>', { desc = "Preview symbol overview" })
+  -- error
+  vim.keymap.set('n', '<leader>pe', '<Cmd>lua vim.diagnostic.open_float()<CR>', { desc = "Preview error details" })
 
   -- User commands
   vim.keymap.set('n', '<leader>P', '<Cmd>:PasteInline<CR>', { noremap = true, desc = "Paste contents as inline" })
+
+  -- User commands
+  vim.keymap.set('n', '<leader>cp', '<Cmd>:CopyRelPath<CR>',
+    { noremap = true, desc = "Copy relative path of current file" })
 
   -- Search mappings: These will make it so that going to the next one in a
   -- search will center on the line it's found in.
@@ -1107,11 +1217,22 @@ local function set_up_vscode_keybindings()
 end
 
 local function set_up_keybindings()
+  local user = get_user_module()
+
   set_up_global_keybindings()
+  if user ~= nil then
+    user.set_up_global_keybindings()
+  end
   if vim.g.vscode then
     set_up_vscode_keybindings()
+    if user ~= nil then
+      user.set_up_vscode_keybindings()
+    end
   else
     set_up_nvim_only_keybindings()
+    if user ~= nil then
+      user.set_up_nvim_only_keybindings()
+    end
   end
 end
 

@@ -41,5 +41,8 @@ source $(brew --prefix)/share/zsh-vi-mode/zsh-vi-mode.plugin.zsh
 # fnm
 eval "$(fnm env --use-on-cd)"
 
+# jump
+eval "$(jump shell)"
+
 # load user specific configuration
 [ -f "$HOME/.shell.user.sh" ] && source "$HOME/.shell.user.sh"

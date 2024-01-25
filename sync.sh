@@ -4,7 +4,7 @@ os="$(uname)"
 
 if [[ $os == "Darwin" ]]; then
   cp .shell.mac.sh ~/.shell.sh
-  cp .alacritty.mac.yml ~/.alacritty.yml
+  cp .alacritty.mac.toml ~/.alacritty.toml
   cp .wezterm.lua ~/.wezterm.lua 
 elif [[ $os == "Linux" ]]; then
   cp .shell.linux.sh ~/.shell.sh

@@ -207,7 +207,6 @@ local function set_up_nvim_only_plugins(plugins)
     dependencies = { 'nvim-tree/nvim-web-devicons' },
     config = function()
       require("lualine").setup({
-        options = { theme = 'github_dark_colorblind' },
         sections = {
           lualine_c = {
             {
@@ -326,9 +325,18 @@ local function set_up_nvim_only_plugins(plugins)
       })
 
       -- vim.cmd('colorscheme github_dark_dimmed')
-      vim.cmd('colorscheme github_dark_colorblind')
+      -- vim.cmd('colorscheme github_dark_colorblind')
       -- vim.cmd('colorscheme github_light')
       -- vim.cmd('colorscheme github_light_colorblind')
+    end,
+  })
+
+  table.insert(plugins, {
+    "EdenEast/nightfox.nvim",
+    lazy = false,
+    priority = 1000,
+    config = function()
+      vim.cmd('colorscheme terafox')
     end,
   })
 
@@ -506,7 +514,7 @@ local function set_up_nvim_only_plugins(plugins)
         },
         autotag = {
           enable = true,
-          enable_close_on_slash = true,
+          enable_close_on_slash = false,
           filetypes = {
             'html', 'javascript', 'typescript', 'javascriptreact', 'typescriptreact', 'svelte', 'vue', 'tsx', 'jsx',
             'rescript',
@@ -678,12 +686,6 @@ local function set_up_nvim_only_plugins(plugins)
       lsp.setup()
     end
 
-  })
-
-  table.insert(plugins, {
-    "pmizio/typescript-tools.nvim",
-    dependencies = { "nvim-lua/plenary.nvim", "neovim/nvim-lspconfig" },
-    opts = {},
   })
 
   table.insert(plugins, {

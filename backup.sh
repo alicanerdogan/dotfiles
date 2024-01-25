@@ -3,10 +3,12 @@
 os="$(uname)"
 
 cp ~/.shell.sh ~/.shell.sh.bak
-cp ~/.alacritty.yml ~/.alacritty.yml.bak 
 
 if [[ $os == "Darwin" ]]; then
   cp ~/.wezterm.lua ~/.wezterm.lua.bak 
+  cp ~/.alacritty.toml ~/.alacritty.toml.bak 
+elif [[ $os == "Linux" ]]; then
+  cp ~/.alacritty.yml ~/.alacritty.yml.bak 
 fi
 
 cp ~/.zshrc ~/.zshrc.bak 

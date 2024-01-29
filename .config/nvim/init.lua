@@ -961,6 +961,31 @@ local function set_up_nvim_only_plugins(plugins)
       )
     end,
   })
+
+  table.insert(plugins, {
+    "github/copilot.vim",
+    config = function()
+      vim.g.copilot_no_tap_map = true
+      vim.g.copilot_assume_mapped = true
+      vim.g.copilot_filetypes = {
+        ["*"] = false,
+        ["javascript"] = true,
+        ["javascriptreact"] = true,
+        ["typescript"] = true,
+        ["typescriptreact"] = true,
+        ["lua"] = true,
+        ["rust"] = true,
+        ["c"] = true,
+        ["c++"] = true,
+        ["go"] = true,
+        ["python"] = true,
+      }
+      vim.api.nvim_set_keymap("i", "<C-L>", 'copilot#Accept("<CR>")', { silent = true, expr = true })
+      vim.api.nvim_set_keymap("i", "<C-J>", 'copilot#Previous()', { silent = true, expr = true })
+      vim.api.nvim_set_keymap("i", "<C-K>", 'copilot#Next()', { silent = true, expr = true })
+      vim.keymap.set("i", "<C-H>", "<cmd>:Copilot<CR>", { silent = true, desc = 'Copilot Panel' })
+    end,
+  })
 end
 
 local function set_up_vscode_plugins(plugins)

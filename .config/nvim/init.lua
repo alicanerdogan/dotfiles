@@ -1,3 +1,12 @@
+local theme = 'light'
+local function set_theme()
+  if theme == 'dark' then
+    vim.cmd('colorscheme terafox')
+  else
+    vim.cmd('colorscheme dayfox')
+  end
+end
+
 -- Utility functions
 local user_module = nil
 local function get_user_module()
@@ -15,7 +24,7 @@ local function get_user_module()
   end
 end
 
-function did_editor_open_with_directory()
+local function did_editor_open_with_directory()
   local args = vim.fn.argv()
   if #args < 1 then
     return false
@@ -64,13 +73,6 @@ end
 
 local function set_up_nvim_only_config()
   vim.opt.termguicolors = true
-
-  -- toggle tmux status when entering and leaving
-  vim.api.nvim_create_autocmd({ "VimEnter", "VimLeave" }, {
-    group = vim.api.nvim_create_augroup('TermConfig', {}), -- this is not required, but it is possible to group certain autocmd together with this
-    pattern = { '*' },                                     -- Just to execute the command when matching all files
-    command = [[silent !tmux set status off]],             -- This is not perfect, if another vim instance is running, it doesn't work
-  })
 
   -- Open with the most recent file
   vim.api.nvim_create_autocmd({ "VimEnter" }, {
@@ -161,6 +163,19 @@ local function set_up_nvim_only_config()
       end
     end,
     { nargs = 0 })
+
+  -- Switch theme to dark or light (pass argument to switch to a specific theme)
+  vim.api.nvim_create_user_command('SwitchTheme',
+    function(opts)
+      local new_theme = opts.args
+      if new_theme ~= "dark" and new_theme ~= "light" then
+        print("Invalid theme. Please use 'dark' or 'light'")
+        return
+      end
+      theme = new_theme
+      set_theme()
+    end,
+    { nargs = 1 })
 end
 
 local function set_up_vscode_config()
@@ -201,7 +216,6 @@ end
 local function set_up_nvim_only_plugins(plugins)
   table.insert(plugins, { "junegunn/fzf", run = vim.fn['fzf#install'] })
   table.insert(plugins, { "junegunn/fzf.vim" })
-  table.insert(plugins, { "easymotion/vim-easymotion" })
   table.insert(plugins, {
     "nvim-lualine/lualine.nvim",
     dependencies = { 'nvim-tree/nvim-web-devicons' },
@@ -335,9 +349,7 @@ local function set_up_nvim_only_plugins(plugins)
     "EdenEast/nightfox.nvim",
     lazy = false,
     priority = 1000,
-    config = function()
-      vim.cmd('colorscheme terafox')
-    end,
+    config = set_theme,
   })
 
   table.insert(plugins, {
@@ -506,10 +518,10 @@ local function set_up_nvim_only_plugins(plugins)
         incremental_selection = {
           enable = true,
           keymaps = {
-            -- init_selection = "<space>", -- maps in normal mode to init the node/scope selection with space
-            -- node_incremental = "<space>", -- increment to the upper named parent
-            -- node_decremental = "<bs>", -- decrement to the previous node
-            -- scope_incremental = "<tab>", -- increment to the upper scope (as defined in locals.scm)
+            init_selection = "<leader>ni",    -- ([n]ode [i]nit) maps in normal mode to init the node/scope selection with space
+            node_incremental = "<leader>ne",  -- ([n]ode [e]xpand) increment to the upper named parent
+            node_decremental = "<leader>nd",  -- ([n]ode [d]ecrement) decrement to the previous node
+            scope_incremental = "<leader>ns", -- ([n]ode [s]cope) increment to the upper scope (as defined in locals.scm)
           },
         },
         autotag = {
@@ -979,12 +991,60 @@ local function set_up_nvim_only_plugins(plugins)
         ["c++"] = true,
         ["go"] = true,
         ["python"] = true,
+        ["shell"] = true,
+        ["bash"] = true,
+        ["zsh"] = true,
+        ["sh"] = true,
       }
       vim.api.nvim_set_keymap("i", "<C-L>", 'copilot#Accept("<CR>")', { silent = true, expr = true })
       vim.api.nvim_set_keymap("i", "<C-J>", 'copilot#Previous()', { silent = true, expr = true })
       vim.api.nvim_set_keymap("i", "<C-K>", 'copilot#Next()', { silent = true, expr = true })
-      vim.keymap.set("i", "<C-H>", "<cmd>:Copilot<CR>", { silent = true, desc = 'Copilot Panel' })
+      vim.keymap.set("i", "<C-H>", "<cmd>:Copilot<CR>", { silent = true, desc = "Copilot Panel" })
     end,
+  })
+
+  table.insert(plugins, {
+    "CopilotC-Nvim/CopilotChat.nvim",
+    branch = "canary",
+    dependencies = {
+      { "github/copilot.vim" },
+      { "nvim-lua/plenary.nvim" },
+      { "nvim-telescope/telescope.nvim" },
+    },
+    config = function()
+      require("CopilotChat").setup {
+        debug = true,                     -- Enable debug logging
+        show_user_selection = true,       -- Shows user selection in chat
+        show_system_prompt = false,       -- Shows system prompt in chat
+        show_folds = true,                -- Shows folds for sections in chat
+        clear_chat_on_new_prompt = false, -- Clears chat on every new prompt
+        auto_follow_cursor = true,        -- Auto-follow cursor in chat
+        name = 'CopilotChat',             -- Name to use in chat
+        separator = '---',                -- Separator to use in chat
+        -- default window options
+        window = {
+          layout = 'vertical', -- 'vertical', 'horizontal', 'float'
+        },
+        -- default mappings
+        mappings = {
+          close = 'q',
+          reset = '<C-x>',
+          complete = '<Tab>',
+          submit_prompt = '<CR>',
+          accept_diff = '<C-y>',
+          show_diff = '<C-d>',
+        },
+      }
+      vim.keymap.set('v', '<leader>ae', '<cmd>:CopilotChatExplain<CR>',
+        { desc = "Copilot Chat - Explain", silent = true })
+      vim.keymap.set('v', '<leader>af', '<cmd>:CopilotChatFix<CR>', { desc = "Copilot Chat - Fix", silent = true })
+      vim.keymap.set('v', '<leader>ad', '<cmd>:CopilotChatDocs<CR>', { desc = "Copilot Chat - Docs", silent = true })
+      vim.keymap.set('v', '<leader>ao', '<cmd>:CopilotChatOptimize<CR>',
+        { desc = "Copilot Chat - Optimize", silent = true })
+      vim.keymap.set('n', '<leader>ac', '<cmd>:CopilotChatCommit<CR>', { desc = "Copilot Chat - Commit", silent = true })
+      vim.keymap.set('n', '<leader>as', '<cmd>:CopilotChatCommitStaged<CR>',
+        { desc = "Copilot Chat - Commit Staged", silent = true })
+    end
   })
 end
 
@@ -1191,6 +1251,9 @@ local function set_up_nvim_only_keybindings()
   vim.keymap.set('n', '<leader>jp', '<Cmd>:cn<CR>', { noremap = true, desc = "Jump to previous mark into quickfix" })
   -- linter warnings and errors
   vim.keymap.set('n', '<leader>jl', '<Cmd>lua vim.diagnostic.goto_next()<CR>', { desc = "Jump to next error/warning" })
+  -- linter warnings and errors
+  vim.keymap.set('n', '<leader>jL', '<Cmd>lua vim.diagnostic.goto_prev()<CR>',
+    { desc = "Jump to previous error/warning" })
 
   -- PEEK/PREVIEW
   -- to docs

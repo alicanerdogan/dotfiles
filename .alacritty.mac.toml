@@ -1,37 +1,78 @@
-# Colors (One Dark)
-
+#START_OF_ACTIVE_THEME
+##START_OF_LIGHT_THEME
+# Colors (Gruvbox light)
+#
 # Default colors
 [colors.primary]
-background = '#282c34'
-foreground = '#abb2bf'
-
+# hard contrast background = = '#f9f5d7'
+background = '#fbf1c7'
+# soft contrast background = = '#f2e5bc'
+foreground = '#3c3836'
+#
 # Normal colors
 [colors.normal]
-black   = '#1e2127'
-red     = '#e06c75'
-green   = '#98c379'
-yellow  = '#d19a66'
-blue    = '#61afef'
-magenta = '#c678dd'
-cyan    = '#56b6c2'
-white   = '#abb2bf'
-
+black   = '#fbf1c7'
+red     = '#cc241d'
+green   = '#98971a'
+yellow  = '#d79921'
+blue    = '#458588'
+magenta = '#b16286'
+cyan    = '#689d6a'
+white   = '#7c6f64'
+#
 # Bright colors
 [colors.bright]
-black   = '#5c6370'
-red     = '#e06c75'
-green   = '#98c379'
-yellow  = '#d19a66'
-blue    = '#61afef'
-magenta = '#c678dd'
-cyan    = '#56b6c2'
-white   = '#ffffff'
+black   = '#928374'
+red     = '#9d0006'
+green   = '#79740e'
+yellow  = '#b57614'
+blue    = '#076678'
+magenta = '#8f3f71'
+cyan    = '#427b58'
+white   = '#3c3836'
+##END_OF_LIGHT_THEME
+#END_OF_ACTIVE_THEME
+
+#START_OF_INACTIVE_THEME
+# ##START_OF_DARK_THEME
+# # Colors (One Dark)
+# # "~/.config/alacritty/themes/themes/wombat.toml"
+# 
+# # Default colors
+# [colors.primary]
+# # background = '#ffffff'
+# background = '#282c34'
+# foreground = '#abb2bf'
+# 
+# # Normal colors
+# [colors.normal]
+# black   = '#1e2127'
+# red     = '#e06c75'
+# green   = '#98c379'
+# yellow  = '#d19a66'
+# blue    = '#61afef'
+# magenta = '#c678dd'
+# cyan    = '#56b6c2'
+# white   = '#abb2bf'
+# 
+# # Bright colors
+# [colors.bright]
+# black   = '#5c6370'
+# red     = '#e06c75'
+# green   = '#98c379'
+# yellow  = '#d19a66'
+# blue    = '#61afef'
+# magenta = '#c678dd'
+# cyan    = '#56b6c2'
+# white   = '#ffffff'
+# ##END_OF_DARK_THEME
+#END_OF_INACTIVE_THEME
 
 [env]
 TERM = "xterm-256color"
 
 [font]
-size = 14.0
+size = 15.0
 
 [font.normal]
 family = "JetBrainsMono Nerd Font"

@@ -1,4 +1,4 @@
-local theme = 'light'
+local theme = 'dark'
 local function set_theme()
   if theme == 'dark' then
     vim.cmd('colorscheme terafox')
@@ -32,10 +32,6 @@ local function did_editor_open_with_directory()
   local Path = require('plenary.path')
   local path = Path:new({ args[1] }):absolute()
   local cwd = Path:new({ vim.loop.cwd() }):absolute()
-
-  if vim.endswith(path, "/NvimTree_1") then
-    path = string.sub(path, 1, #path - 11)
-  end
 
   return path == cwd and vim.fn.isdirectory(path) > 0
 end
@@ -73,41 +69,6 @@ end
 
 local function set_up_nvim_only_config()
   vim.opt.termguicolors = true
-
-  -- Open with the most recent file
-  vim.api.nvim_create_autocmd({ "VimEnter" }, {
-    group = vim.api.nvim_create_augroup('BootOpenRecent', {}), -- this is not required, but it is possible to group certain autocmd together with this
-    pattern = { '*' },                                         -- Just to execute the command when matching all files
-    callback = function()
-      if (not did_editor_open_with_directory()) then
-        return
-      end
-      local Path = require('plenary.path')
-      local args = vim.fn.argv()
-      local project_dir_path = Path:new({ args[1] }):absolute()
-      if vim.endswith(project_dir_path, "/NvimTree_1") then
-        project_dir_path = string.sub(project_dir_path, 1, #project_dir_path - 11)
-      end
-
-      local recent_files = vim.v.oldfiles
-      for i = 1, #recent_files do
-        local recent_file = recent_files[i]
-        local recent_file_path = Path:new({ recent_file }):absolute()
-
-        if vim.startswith(recent_file_path, project_dir_path) then
-          if not string.find(recent_file_path, "/diffview") then
-            if not vim.endswith(recent_file_path, "/NvimTree_1") then
-              if project_dir_path ~= recent_file_path then
-                -- require("nvim-tree.api").tree.close_in_all_tabs()
-                -- vim.cmd(":e " .. recent_file_path)
-                return
-              end
-            end
-          end
-        end
-      end
-    end,
-  })
 
   vim.api.nvim_create_user_command('PasteInline',
     function()
@@ -214,8 +175,6 @@ local function set_up_global_plugins(plugins)
 end
 
 local function set_up_nvim_only_plugins(plugins)
-  table.insert(plugins, { "junegunn/fzf", run = vim.fn['fzf#install'] })
-  table.insert(plugins, { "junegunn/fzf.vim" })
   table.insert(plugins, {
     "nvim-lualine/lualine.nvim",
     dependencies = { 'nvim-tree/nvim-web-devicons' },
@@ -252,7 +211,8 @@ local function set_up_nvim_only_plugins(plugins)
       "nvim-treesitter/nvim-treesitter",
       "nvim-tree/nvim-web-devicons",
       "smartpde/telescope-recent-files",
-      "nvim-telescope/telescope-live-grep-args.nvim"
+      "nvim-telescope/telescope-live-grep-args.nvim",
+      "natecraddock/telescope-zf-native.nvim"
     },
     config = function()
       require("telescope").setup({
@@ -260,9 +220,19 @@ local function set_up_nvim_only_plugins(plugins)
           fzf = {
             fuzzy = true,                   -- false will only do exact matching
             override_generic_sorter = true, -- override the generic sorter
-            override_file_sorter = true,    -- override the file sorter
+            override_file_sorter = false,   -- override the file sorter
             case_mode = "smart_case",       -- or "ignore_case" or "respect_case"
             -- the default case_mode is "smart_case"
+          },
+          ["zf-native"] = {
+            file = {
+              enable = true,
+              highlight_results = true,
+              match_filename = true,
+            },
+            generic = {
+              enable = false,
+            },
           },
           recent_files = {
             stat_files = true,
@@ -295,6 +265,7 @@ local function set_up_nvim_only_plugins(plugins)
       -- To get fzf loaded and working with telescope, you need to call
       -- load_extension, somewhere after setup function:
       require('telescope').load_extension('fzf')
+      require("telescope").load_extension("zf-native")
 
       -- To get ui-select loaded and working with telescope, you need to call
       -- load_extension, somewhere after setup function:
@@ -353,43 +324,41 @@ local function set_up_nvim_only_plugins(plugins)
   })
 
   table.insert(plugins, {
-    "nvim-tree/nvim-tree.lua",
-    version = "*",
-    dependencies = { 'nvim-tree/nvim-web-devicons' },
+    "nvim-neo-tree/neo-tree.nvim",
+    branch = "v3.x",
+    dependencies = {
+      "nvim-lua/plenary.nvim",
+      "nvim-tree/nvim-web-devicons",
+      "MunifTanjim/nui.nvim",
+    },
     config = function()
-      require("nvim-tree").setup({
-        sort_by = "case_sensitive",
-        filters = {
-          git_ignored = true,
-          exclude = {
-            "node_modules",
+      require("neo-tree").setup({
+        default_component_configs = {
+          file_size = {
+            enabled = false,
+          },
+          type = {
+            enabled = false,
+          },
+          last_modified = {
+            enabled = false,
+          },
+          created = {
+            enabled = false,
           },
         },
-        on_attach = function(bufnr)
-          local api = require('nvim-tree.api')
-
-          local function opts(desc)
-            return {
-              desc = 'nvim-tree: ' .. desc,
-              buffer = bufnr,
-              noremap = true,
-              silent = true,
-              nowait = true,
-            }
-          end
-
-          api.config.mappings.default_on_attach(bufnr)
-
-          vim.keymap.del('n', '<C-e>', { buffer = bufnr })
-          vim.keymap.set('n', '<C-e>', ':NvimTreeToggle<CR>', { desc = "Toggle nvim-tree", noremap = true })
-          vim.keymap.del('n', '<C-t>', { buffer = bufnr })
-          vim.keymap.set('n', '<C-t>', ':SmartToggleTerm<CR>', { desc = "Toggle terminal", noremap = true })
-        end
+        window = {
+          position = "left",
+          width = 80,
+          mappings = {
+            ["<c-v>"] = "open_vsplit",
+          },
+        },
       })
 
       -- Exit NvimTree when the active buffer changes
       vim.api.nvim_create_autocmd({ "BufLeave", "BufWinLeave" }, {
-        pattern = "NvimTree_*",
+        pattern = "neo-tree *",
         callback = function()
           local tree_wins = {}
           local floating_wins = {}
@@ -398,17 +367,17 @@ local function set_up_nvim_only_plugins(plugins)
             local bufname = vim.api.nvim_buf_get_name(vim.api.nvim_win_get_buf(w))
             if vim.api.nvim_win_get_config(w).relative ~= '' then
               table.insert(floating_wins, w)
-            elseif bufname:match("NvimTree_") == nil then
+            elseif bufname:match("neo-tree ") == nil then
               table.insert(tree_wins, w)
             end
           end
           if #tree_wins > 0 then
             -- Should quit, so we close all invalid windows.
-            vim.cmd(':NvimTreeClose')
+            vim.cmd(':Neotree close')
           end
         end
       })
-    end,
+    end
   })
 
   table.insert(plugins, {
@@ -1027,14 +996,31 @@ local function set_up_nvim_only_plugins(plugins)
         },
         -- default mappings
         mappings = {
-          close = 'q',
-          reset = '<C-x>',
-          complete = '<Tab>',
-          submit_prompt = '<CR>',
-          accept_diff = '<C-y>',
-          show_diff = '<C-d>',
+          complete = {
+            detail = 'Use @<Tab> or /<Tab> for options.',
+            insert = '<Tab>',
+          },
+          close = {
+            normal = 'q',
+          },
+          reset = {
+            normal = '<C-x>',
+          },
+          submit_prompt = {
+            normal = '<CR>',
+          },
+          accept_diff = {
+            normal = '<C-y>',
+          },
+          show_diff = {
+            normal = '<C-d>',
+          },
         },
       }
+      vim.keymap.set('n', '<leader>aa', '<cmd>:CopilotChatExplain<CR>',
+        { desc = "Copilot Chat - Open", silent = true })
+      vim.keymap.set('v', '<leader>aa', '<cmd>:CopilotChatExplain<CR>',
+        { desc = "Copilot Chat - Open", silent = true })
       vim.keymap.set('v', '<leader>ae', '<cmd>:CopilotChatExplain<CR>',
         { desc = "Copilot Chat - Explain", silent = true })
       vim.keymap.set('v', '<leader>af', '<cmd>:CopilotChatFix<CR>', { desc = "Copilot Chat - Fix", silent = true })
@@ -1173,7 +1159,7 @@ end
 
 local function set_up_nvim_only_keybindings()
   -- shows directory
-  vim.keymap.set('n', '<C-e>', ':NvimTreeToggle<CR>', { noremap = true, desc = "Toggle nvim-tree" })
+  vim.keymap.set('n', '<C-e>', ':Neotree toggle<CR>', { noremap = true, desc = "Toggle nvim-tree" })
   -- reloads the config
   vim.keymap.set('n', '<leader><CR>', ':so ~/.config/nvim/init.lua<CR>',
     { noremap = true, desc = "Re-source configuration" })
@@ -1244,7 +1230,7 @@ local function set_up_nvim_only_keybindings()
   -- to references
   vim.keymap.set('n', '<leader>jr', '<Cmd>lua vim.lsp.buf.references()<CR>', { desc = "List references" })
   -- to explorer
-  vim.keymap.set('n', '<leader>je', ':NvimTreeFindFile<CR>', { desc = "Jump to current file in nvim-tree" })
+  vim.keymap.set('n', '<leader>je', ':Neotree reveal<CR>', { desc = "Jump to current file in nvim-tree" })
   -- quickfix - next in the list
   vim.keymap.set('n', '<leader>jn', '<Cmd>:cn<CR>', { noremap = true, desc = "Jump to next mark into quickfix" })
   -- quickfix - previous in the list

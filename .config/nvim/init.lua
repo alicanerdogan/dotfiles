@@ -661,8 +661,18 @@ local function set_up_nvim_only_plugins(plugins)
         lsp.default_keymaps({ buffer = bufnr })
       end)
 
-      -- (Optional) Configure lua language server for neovim
-      require('lspconfig').lua_ls.setup(lsp.nvim_lua_ls())
+      local lspconfig require('lspconfig')
+      lspconfig.tsserver.setup({
+        handlers = {
+          -- When using tsserver, go to definition should open the first result and ignore the others in the list
+          ["textDocument/definition"] = function(err, result, ...)
+            result = vim.tbl_islist(result) and result[1] or result
+            vim.lsp.handlers["textDocument/definition"](err, result, ...)
+          end,
+        },
+      })
+      lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
+
 
       lsp.setup()
     end

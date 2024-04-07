@@ -22,8 +22,7 @@ gpull() {
 alias gpom="git pull origin main"
 alias gcm="git checkout main"
 
-export WINHOST="/mnt/c/Users/alican"
-alias cdh="cd $WINHOST"
+alias p="pnpm"
 
 # Linux specific
 export PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"

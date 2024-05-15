@@ -661,7 +661,10 @@ local function set_up_nvim_only_plugins(plugins)
         lsp.default_keymaps({ buffer = bufnr })
       end)
 
-      local lspconfig require('lspconfig')
+      -- (Optional) Configure lua language server for neovim
+      local lspconfig = require('lspconfig')
+      lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
+
       lspconfig.tsserver.setup({
         handlers = {
           -- When using tsserver, go to definition should open the first result and ignore the others in the list
@@ -671,8 +674,6 @@ local function set_up_nvim_only_plugins(plugins)
           end,
         },
       })
-      lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
-
 
       lsp.setup()
     end
@@ -897,6 +898,8 @@ local function set_up_nvim_only_plugins(plugins)
           map('n', '<leader>glb', function() gs.blame_line { full = true } end, { desc = "Git: Blame line" })
           map('n', '<leader>gb', gs.toggle_current_line_blame, { desc = "Git: Toggle blame line" })
           map('n', '<leader>gd', gs.diffthis, { desc = "Git: Diff current" })
+          map('n', '<leader>gr', gs.reset_hunk, { desc = "Git: Reset the diff" })
+          map('n', '<leader>gp', gs.preview_hunk, { desc = "Git: Preview the diff" })
         end,
       }
     end,
@@ -974,6 +977,8 @@ local function set_up_nvim_only_plugins(plugins)
         ["bash"] = true,
         ["zsh"] = true,
         ["sh"] = true,
+        ["sql"] = true,
+        ["md"] = true,
       }
       vim.api.nvim_set_keymap("i", "<C-L>", 'copilot#Accept("<CR>")', { silent = true, expr = true })
       vim.api.nvim_set_keymap("i", "<C-J>", 'copilot#Previous()', { silent = true, expr = true })
@@ -1027,12 +1032,12 @@ local function set_up_nvim_only_plugins(plugins)
           },
         },
       }
-      vim.keymap.set('n', '<leader>aa', '<cmd>:CopilotChatExplain<CR>',
-        { desc = "Copilot Chat - Open", silent = true })
-      vim.keymap.set('v', '<leader>aa', '<cmd>:CopilotChatExplain<CR>',
+      vim.keymap.set('n', '<leader>aa', '<cmd>:CopilotChatOpen<CR>',
         { desc = "Copilot Chat - Open", silent = true })
       vim.keymap.set('v', '<leader>ae', '<cmd>:CopilotChatExplain<CR>',
         { desc = "Copilot Chat - Explain", silent = true })
+      vim.keymap.set('v', '<leader>ar', '<cmd>:CopilotChatReview<CR>',
+        { desc = "Copilot Chat - Review", silent = true })
       vim.keymap.set('v', '<leader>af', '<cmd>:CopilotChatFix<CR>', { desc = "Copilot Chat - Fix", silent = true })
       vim.keymap.set('v', '<leader>ad', '<cmd>:CopilotChatDocs<CR>', { desc = "Copilot Chat - Docs", silent = true })
       vim.keymap.set('v', '<leader>ao', '<cmd>:CopilotChatOptimize<CR>',

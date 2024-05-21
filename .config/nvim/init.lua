@@ -167,10 +167,10 @@ end
 local function set_up_global_plugins(plugins)
   table.insert(plugins, { "tpope/vim-surround" })
   table.insert(plugins, {
-    'numToStr/Comment.nvim',
-    opts = {
-    },
-    lazy = false,
+    "folke/ts-comments.nvim",
+    opts = {},
+    event = "VeryLazy",
+    enabled = vim.fn.has("nvim-0.10.0") == 1,
   })
 end
 
@@ -979,6 +979,8 @@ local function set_up_nvim_only_plugins(plugins)
         ["sh"] = true,
         ["sql"] = true,
         ["md"] = true,
+        ["json"] = true,
+        ["markdown"] = true,
       }
       vim.api.nvim_set_keymap("i", "<C-L>", 'copilot#Accept("<CR>")', { silent = true, expr = true })
       vim.api.nvim_set_keymap("i", "<C-J>", 'copilot#Previous()', { silent = true, expr = true })
@@ -1125,6 +1127,13 @@ local function set_up_vscode_plugins(plugins)
         },
       })
     end,
+  })
+
+  table.insert(plugins, {
+    'numToStr/Comment.nvim',
+    opts = {
+    },
+    lazy = false,
   })
 end
 

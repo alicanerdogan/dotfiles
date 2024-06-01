@@ -1233,7 +1233,7 @@ local function set_up_nvim_only_keybindings()
   -- toggles the terminal
   vim.keymap.set('n', '<C-t>', ':SmartToggleTerm<CR>', { noremap = true, desc = "Toggle terminal" })
   -- toggles the trouble
-  vim.keymap.set('n', '<C-j>', ':TroubleToggle<CR>', { noremap = true, desc = "Toggle actions view" })
+  vim.keymap.set('n', '<C-j>', ':Trouble diagnostics toggle<CR>', { noremap = true, desc = "Toggle actions view" })
   -- toggle the diffview
   vim.keymap.set('n', '<C-g>', ':ToggleDiffview<CR>', { noremap = true, desc = "Toggle git overview" })
 

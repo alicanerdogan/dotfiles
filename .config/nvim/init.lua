@@ -69,6 +69,7 @@ end
 
 local function set_up_nvim_only_config()
   vim.opt.termguicolors = true
+  vim.opt.pumheight = 10 -- Sets the numver of items in the popup menu
 
   vim.api.nvim_create_user_command('PasteInline',
     function()
@@ -246,7 +247,7 @@ local function set_up_nvim_only_plugins(plugins)
               i = {
                 ["<C-k>"] = require("telescope-live-grep-args.actions").quote_prompt({
                   postfix =
-                  " -g !*.test.ts -g !*.md -g !*.graphql -g !*.json -g !*.lock -g !*.mock"
+                  " --fixed-strings -g !*.test.ts -g !*.spec.ts -g !*.md -g !*.graphql -g !*.json -g !*.lock -g !*.mock"
                 }),
               },
             },
@@ -868,9 +869,6 @@ local function set_up_nvim_only_plugins(plugins)
           row = 0,
           col = 1
         },
-        yadm                         = {
-          enable = false
-        },
         on_attach                    = function(bufnr)
           local gs = package.loaded.gitsigns
 
@@ -1049,6 +1047,24 @@ local function set_up_nvim_only_plugins(plugins)
         { desc = "Copilot Chat - Commit Staged", silent = true })
     end
   })
+
+  table.insert(plugins, {
+    "nvim-treesitter/nvim-treesitter-context",
+    config = function()
+      require('treesitter-context').setup({
+        enable = true,
+        max_lines = 0,
+        min_window_height = 0,
+        line_numbers = true,
+        multiline_threshold = 20,
+        trim_scope = 'outer',
+        mode = 'cursor',
+        separator = nil,
+        zindex = 20,
+        on_attach = nil,
+      })
+    end,
+  })
 end
 
 local function set_up_vscode_plugins(plugins)
@@ -1127,13 +1143,6 @@ local function set_up_vscode_plugins(plugins)
         },
       })
     end,
-  })
-
-  table.insert(plugins, {
-    'numToStr/Comment.nvim',
-    opts = {
-    },
-    lazy = false,
   })
 end
 

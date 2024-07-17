@@ -22,8 +22,7 @@ gpull() {
   git pull origin $(git_current_branch)
 }
 
-alias gpom="git pull origin main"
-alias gcm="git checkout main"
+alias gpom="git pull origin $(git_main_branch)"
 
 function zvm_after_init() {
   [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh

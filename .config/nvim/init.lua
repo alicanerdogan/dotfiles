@@ -36,6 +36,65 @@ local function did_editor_open_with_directory()
   return path == cwd and vim.fn.isdirectory(path) > 0
 end
 
+local function get_root_directory()
+  local args = vim.fn.argv()
+  if #args < 1 then
+    return nil
+  end
+
+
+  local Path = require('plenary.path')
+  local path = Path:new({ args[1] }):absolute()
+
+  if vim.fn.isdirectory(path) > 0 then
+    return path
+  else
+    return nil
+  end
+end
+
+local function file_exists(path)
+  local f = io.open(path, "r")
+  if f ~= nil then
+    io.close(f)
+    return true
+  else
+    return false
+  end
+end
+
+local function get_biome_path()
+  local root_dir = get_root_directory()
+  if root_dir == nil then
+    return nil
+  end
+  return root_dir .. '/node_modules/.bin/biome'
+end
+
+local function get_prettier_path()
+  local root_dir = get_root_directory()
+  if root_dir == nil then
+    return nil
+  end
+  return root_dir .. '/node_modules/.bin/prettier'
+end
+
+local function biome_exists()
+  local biome_path = get_biome_path()
+  if biome_path == nil then
+    return false
+  end
+  return file_exists(biome_path)
+end
+
+local function prettier_exists()
+  local prettier_path = get_prettier_path()
+  if prettier_path == nil then
+    return false
+  end
+  return file_exists(prettier_path)
+end
+
 -- Utility functions end
 
 local function set_up_global_config()
@@ -63,6 +122,9 @@ local function set_up_global_config()
   -- disable netrw in favor of nvim-tree
   vim.g.loaded_netrw = 1
   vim.g.loaded_netrwPlugin = 1
+  vim.g.markdown_fenced_languages = {
+    "ts=typescript"
+  }
 
   vim.g.mapleader = ' '
 end
@@ -676,6 +738,11 @@ local function set_up_nvim_only_plugins(plugins)
         },
       })
 
+      if biome_exists() then
+        local biome_path = get_biome_path()
+        lspconfig.biome.setup({ cmd = { biome_path, 'lsp-proxy' } })
+      end
+
       lsp.setup()
     end
 
@@ -686,26 +753,40 @@ local function set_up_nvim_only_plugins(plugins)
     config = function()
       local format = require("formatter")
 
-      local prettier = function()
-        return {
-          exe = "./node_modules/.bin/prettier",
-          args = { "--stdin-filepath", vim.fn.shellescape(vim.api.nvim_buf_get_name(0)) },
-          stdin = true,
-        }
+      local formatter = nil
+      if biome_exists() then
+        formatter = function()
+          return {
+            exe = get_biome_path(),
+            args = { "format", "--stdin-file-path", vim.fn.shellescape(vim.api.nvim_buf_get_name(0)) },
+            stdin = true,
+          }
+        end
+      elseif prettier_exists() then
+        formatter = function()
+          return {
+            exe = get_prettier_path(),
+            args = { "--stdin-filepath", vim.fn.shellescape(vim.api.nvim_buf_get_name(0)) },
+            stdin = true,
+          }
+        end
       end
 
-      local settings = {
-        css = { prettier },
-        scss = { prettier },
-        html = { prettier },
-        javascript = { prettier },
-        javascriptreact = { prettier },
-        typescript = { prettier },
-        typescriptreact = { prettier },
-        markdown = { prettier },
-        json = { prettier },
-        jsonc = { prettier },
-      }
+      local settings = {}
+      if formatter ~= nil then
+        settings = {
+          css = { formatter },
+          scss = { formatter },
+          html = { formatter },
+          javascript = { formatter },
+          javascriptreact = { formatter },
+          typescript = { formatter },
+          typescriptreact = { formatter },
+          markdown = { formatter },
+          json = { formatter },
+          jsonc = { formatter },
+        }
+      end
 
       format.setup {
         logging = false,

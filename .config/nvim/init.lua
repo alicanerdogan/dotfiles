@@ -79,6 +79,14 @@ local function get_prettier_path()
   return root_dir .. '/node_modules/.bin/prettier'
 end
 
+local function get_sql_formatter_path()
+  local root_dir = get_root_directory()
+  if root_dir == nil then
+    return nil
+  end
+  return root_dir .. '/node_modules/.bin/sql-formatter'
+end
+
 local function biome_exists()
   local biome_path = get_biome_path()
   if biome_path == nil then
@@ -95,6 +103,14 @@ local function prettier_exists()
   return file_exists(prettier_path)
 end
 
+local function sql_formatter_exists()
+  local sql_formatter_path = get_sql_formatter_path()
+  if sql_formatter_path == nil then
+    return false
+  end
+  return file_exists(sql_formatter_path)
+end
+
 -- Utility functions end
 
 local function set_up_global_config()
@@ -108,6 +124,7 @@ local function set_up_global_config()
   vim.opt.smartindent = true
   vim.opt.cursorline = true     -- Adds a highlight to the current line
   vim.opt.virtualedit = "block" -- Allow cursor to move where there is no text in visual block mode
+  vim.opt.cmdheight = 0         -- Hide the command line when it is not active
 
   local os_uname = vim.loop.os_uname().sysname
   if os_uname == "Darwin" then
@@ -242,15 +259,43 @@ local function set_up_nvim_only_plugins(plugins)
     "nvim-lualine/lualine.nvim",
     dependencies = { 'nvim-tree/nvim-web-devicons' },
     config = function()
+      local condFn = function()
+        local ft = vim.bo.filetype
+        local blocklist = { 'toggleterm' }
+        for _, v in ipairs(blocklist) do
+          if ft == v then
+            return false
+          end
+        end
+        return true
+      end
       require("lualine").setup({
+        options = {
+          disabled_filetypes = { 'neo-tree', 'DiffviewFiles' },
+        },
         sections = {
           lualine_c = {
             {
               'filename',
               file_status = true, -- displays file status (readonly status, modified status)
-              path = 1            -- 0 = just filename, 1 = relative path, 2 = absolute path
+              path = 1,           -- 0 = just filename, 1 = relative path, 2 = absolute path
+              cond = condFn,
             }
-          }
+          },
+          lualine_x = {
+            {
+              'filetype',
+              cond = condFn,
+            }
+          },
+          lualine_y = {
+          },
+          lualine_z = {
+            {
+              'location',
+              cond = condFn,
+            }
+          },
         },
         inactive_sections = {
           lualine_c = {
@@ -772,11 +817,22 @@ local function set_up_nvim_only_plugins(plugins)
         end
       end
 
+      local sql_formatter = nil
+      if sql_formatter_exists() then
+        sql_formatter = function()
+          return {
+            exe = get_sql_formatter_path(),
+            args = { "--language", "sqlite" },
+            stdin = true,
+          }
+        end
+      end
+
       local settings = {}
       if formatter ~= nil then
         settings = {
-          css = { formatter },
-          scss = { formatter },
+          css = { formatter},
+          scss = { formatter},
           html = { formatter },
           javascript = { formatter },
           javascriptreact = { formatter },
@@ -785,6 +841,7 @@ local function set_up_nvim_only_plugins(plugins)
           markdown = { formatter },
           json = { formatter },
           jsonc = { formatter },
+          sql = { sql_formatter },
         }
       end
 

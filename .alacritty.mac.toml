@@ -75,16 +75,24 @@ TERM = "xterm-256color"
 size = 15.0
 
 [font.normal]
-family = "JetBrainsMono Nerd Font"
+family = "JetBrainsMono Nerd Font Propo"
 style = "ExtraLight"
 
 [font.bold]
-family = "JetBrainsMono Nerd Font"
+family = "JetBrainsMono Nerd Font Propo"
 style = "Light"
 
 [font.italic]
-family = "JetBrainsMono Nerd Font"
+family = "JetBrainsMono Nerd Font Propo"
 style = "Italic"
+
+[font.bold_italic]
+family = "JetBrainsMono Nerd Font Propo"
+style = "Bold Italic"
+
+[font.offset]
+x = 0
+y = 2
 
 [mouse]
 hide_when_typing = true
@@ -96,4 +104,9 @@ args = ["new-session", "-A", "-D", "-s", "main"]
 [window]
 decorations = "none"
 startup_mode = "Maximized"
+dynamic_padding = true
+
+[window.padding]
+x = 0
+y = 0
 

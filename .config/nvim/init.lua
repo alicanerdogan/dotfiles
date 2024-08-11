@@ -441,6 +441,11 @@ local function set_up_nvim_only_plugins(plugins)
     },
     config = function()
       require("neo-tree").setup({
+        filesystem = {
+          filtered_items = {
+            hide_dotfiles = false,
+          },
+        },
         default_component_configs = {
           file_size = {
             enabled = false,
@@ -831,8 +836,8 @@ local function set_up_nvim_only_plugins(plugins)
       local settings = {}
       if formatter ~= nil then
         settings = {
-          css = { formatter},
-          scss = { formatter},
+          css = { formatter },
+          scss = { formatter },
           html = { formatter },
           javascript = { formatter },
           javascriptreact = { formatter },
@@ -1059,6 +1064,7 @@ local function set_up_nvim_only_plugins(plugins)
   table.insert(plugins, {
     "CopilotC-Nvim/CopilotChat.nvim",
     branch = "canary",
+    event = "VeryLazy",
     dependencies = {
       { "github/copilot.vim" },
       { "nvim-lua/plenary.nvim" },
@@ -1132,6 +1138,17 @@ local function set_up_nvim_only_plugins(plugins)
         zindex = 20,
         on_attach = nil,
       })
+    end,
+  })
+
+  table.insert(plugins, {
+    "OXY2DEV/markview.nvim",
+    lazy = false,
+    dependencies = {
+      "nvim-treesitter/nvim-treesitter",
+      "nvim-tree/nvim-web-devicons",
+    },
+    config = function()
     end,
   })
 end

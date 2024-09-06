@@ -24,6 +24,18 @@ gpull() {
 
 alias gpom="git pull origin $(git_main_branch)"
 
+# Squash a fix commit to the latest commit
+alias gfix="git commit -m 'Fix' && git rebase -i HEAD~2"
+
+# Edit the latest commit
+alias gce="git reset --soft HEAD~1"
+
+# Create a draft pr
+alias ghprd="gh pr create -d"
+
+# View the pr
+alias ghpr="gh pr view --web"
+
 function zvm_after_init() {
   [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
   eval "$(starship init zsh)"

@@ -1,4 +1,4 @@
-local theme = 'dark'
+local theme = 'light'
 local function set_theme()
   if theme == 'dark' then
     vim.cmd('colorscheme terafox')
@@ -694,17 +694,17 @@ local function set_up_nvim_only_plugins(plugins)
 
   table.insert(plugins, {
     'VonHeikemen/lsp-zero.nvim',
-    branch = 'v2.x',
+    branch = 'v4.x',
     dependencies = {
       -- LSP Support
-      { 'neovim/nvim-lspconfig' },
       { 'williamboman/mason.nvim' },
       { 'williamboman/mason-lspconfig.nvim' },
+      { 'neovim/nvim-lspconfig' },
 
       -- Autocompletion
+      { 'L3MON4D3/LuaSnip' },
       { 'hrsh7th/nvim-cmp' },
       { 'hrsh7th/cmp-nvim-lsp' },
-      { 'L3MON4D3/LuaSnip' },
       { 'saadparwaiz1/cmp_luasnip' },
     },
     config = function()
@@ -761,41 +761,54 @@ local function set_up_nvim_only_plugins(plugins)
 
       local lsp = require('lsp-zero')
 
-      lsp.preset("recommended")
-
-      lsp.ensure_installed({
-        'tsserver',
-        'eslint',
-      })
-
-      lsp.on_attach(function(client, bufnr)
+      local lsp_attach = function(client, bufnr)
         -- see :help lsp-zero-keybindings
         -- to learn the available actions
         lsp.default_keymaps({ buffer = bufnr })
-      end)
+      end
 
-      -- (Optional) Configure lua language server for neovim
+      lsp.extend_lspconfig({
+        sign_text = true,
+        lsp_attach = lsp_attach,
+        float_border = 'rounded',
+        capabilities = require('cmp_nvim_lsp').default_capabilities()
+      })
+
       local lspconfig = require('lspconfig')
-      lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
 
-      lspconfig.tsserver.setup({
+      require('mason').setup({})
+      require('mason-lspconfig').setup({
+        ensure_installed = { 'lua_ls', 'tsserver', 'eslint' },
         handlers = {
-          -- When using tsserver, go to definition should open the first result and ignore the others in the list
-          ["textDocument/definition"] = function(err, result, ...)
-            result = vim.tbl_islist(result) and result[1] or result
-            vim.lsp.handlers["textDocument/definition"](err, result, ...)
+          function(server_name)
+            lspconfig[server_name].setup({})
           end,
-        },
+          lua_ls = function()
+            lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
+          end,
+          tsserver = function()
+            lspconfig.ts_ls.setup({
+              on_init = function()
+                lspconfig.ts_ls.setup({
+                  handlers = {
+                    -- When using ts_ls, go to definition should open the first result and ignore the others in the list
+                    ["textDocument/definition"] = function(err, result, ...)
+                      result = vim.tbl_islist(result) and result[1] or result
+                      vim.lsp.handlers["textDocument/definition"](err, result, ...)
+                    end,
+                  },
+                })
+              end,
+            })
+          end,
+        }
       })
 
       if biome_exists() then
         local biome_path = get_biome_path()
         lspconfig.biome.setup({ cmd = { biome_path, 'lsp-proxy' } })
       end
-
-      lsp.setup()
     end
-
   })
 
   table.insert(plugins, {

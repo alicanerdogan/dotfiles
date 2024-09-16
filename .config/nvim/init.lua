@@ -1,4 +1,4 @@
-local theme = 'light'
+local theme = 'dark'
 local function set_theme()
   if theme == 'dark' then
     vim.cmd('colorscheme terafox')
@@ -778,7 +778,7 @@ local function set_up_nvim_only_plugins(plugins)
 
       require('mason').setup({})
       require('mason-lspconfig').setup({
-        ensure_installed = { 'lua_ls', 'tsserver', 'eslint' },
+        ensure_installed = { 'lua_ls', 'ts_ls', 'eslint' },
         handlers = {
           function(server_name)
             lspconfig[server_name].setup({})
@@ -786,7 +786,7 @@ local function set_up_nvim_only_plugins(plugins)
           lua_ls = function()
             lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
           end,
-          tsserver = function()
+          ts_ls = function()
             lspconfig.ts_ls.setup({
               on_init = function()
                 lspconfig.ts_ls.setup({

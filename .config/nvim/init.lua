@@ -1164,6 +1164,22 @@ local function set_up_nvim_only_plugins(plugins)
     config = function()
     end,
   })
+
+  table.insert(plugins, {
+    "nvim-pack/nvim-spectre",
+    config = function()
+      require('spectre').setup({
+        replace_engine = {
+          ["sed"] = {
+            cmd = "sed",
+            args = {"-i", "", "-E"},
+          },
+        },
+      })
+
+      vim.keymap.set('n', '<leader>S', '<cmd>lua require("spectre").toggle()<CR>', { desc = "Toggle Spectre" })
+    end,
+  })
 end
 
 local function set_up_vscode_plugins(plugins)

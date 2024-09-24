@@ -76,11 +76,11 @@ size = 15.0
 
 [font.normal]
 family = "JetBrainsMono Nerd Font Propo"
-style = "ExtraLight"
+style = "Light"
 
 [font.bold]
 family = "JetBrainsMono Nerd Font Propo"
-style = "Light"
+style = "Regular"
 
 [font.italic]
 family = "JetBrainsMono Nerd Font Propo"

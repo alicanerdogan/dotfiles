@@ -13,5 +13,6 @@ fi
 
 cp ~/.zshrc .zshrc 
 cp -r ~/.config/nvim/** .config/nvim
+cp -r ~/.config/ghostty/** .config/ghostty
 cp ~/.tmux.conf .tmux.conf 
 

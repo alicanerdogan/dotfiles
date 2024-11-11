@@ -1,0 +1,44 @@
+font-family = JetBrainsMono Nerd Font Propo
+font-size   = 15
+
+mouse-hide-while-typing = true
+clipboard-read = allow
+copy-on-select = true
+cursor-style = block
+window-decoration = true
+macos-window-shadow = false
+# macos-titlebar-style = hidden
+quit-after-last-window-closed = true
+
+# Vertical split
+keybind = ctrl+f>ctrl+v=new_split:right
+# Horizontal split
+keybind = ctrl+f>ctrl+h=new_split:down
+# Move between panes
+keybind = ctrl+f>l=goto_split:right
+keybind = ctrl+f>h=goto_split:left
+keybind = ctrl+f>j=goto_split:bottom
+keybind = ctrl+f>k=goto_split:top
+
+# Open a new tab
+keybind = ctrl+f>ctrl+c=new_tab
+
+# Equally resize panes
+keybind = ctrl+f>|=equalize_splits
+
+# Toggle to the last tab
+
+# Move betweeen tabs
+keybind = ctrl+f>1=goto_tab:1
+keybind = ctrl+f>2=goto_tab:2
+keybind = ctrl+f>3=goto_tab:4
+keybind = ctrl+f>4=goto_tab:4
+keybind = ctrl+f>5=goto_tab:5
+keybind = ctrl+f>6=goto_tab:6
+keybind = ctrl+f>7=goto_tab:7
+keybind = ctrl+f>8=goto_tab:8
+keybind = ctrl+f>9=goto_tab:9
+
+# Clear buffer
+keybind = ctrl+f>ctrl+l=clear_screen
+

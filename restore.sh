@@ -13,5 +13,7 @@ fi
 mv -f ~/.zshrc.bak  ~/.zshrc 
 cp -r ~/.config/nvim.bak/**  ~/.config/nvim
 rm -rf ~/.config/nvim.bak
+cp -r ~/.config/ghostty.bak/**  ~/.config/ghostty
+rm -rf ~/.config/ghostty.bak
 mv -f ~/.tmux.conf.bak  ~/.tmux.conf 
 

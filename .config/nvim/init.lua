@@ -1172,7 +1172,7 @@ local function set_up_nvim_only_plugins(plugins)
         replace_engine = {
           ["sed"] = {
             cmd = "sed",
-            args = {"-i", "", "-E"},
+            args = { "-i", "", "-E" },
           },
         },
       })
@@ -1408,6 +1408,10 @@ local function set_up_nvim_only_keybindings()
   -- search will center on the line it's found in.
   vim.keymap.set('n', 'n', 'nzzzv', { noremap = true, desc = "Jump to next" })
   vim.keymap.set('n', 'N', 'Nzzzv', { noremap = true, desc = "Jump to prev" })
+
+  -- Insert mode mappings
+  vim.keymap.set('i', '<M-BS>', '<C-w>', { noremap = true, desc = "Delete previous word" })
+  vim.keymap.set('c', '<M-BS>', '<C-w>', { noremap = true, desc = "Delete previous word" })
 end
 
 local function set_up_vscode_keybindings()

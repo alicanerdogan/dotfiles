@@ -97,7 +97,7 @@ y = 2
 [mouse]
 hide_when_typing = true
 
-[shell]
+[terminal.shell]
 program = "/opt/homebrew/bin/tmux"
 args = ["new-session", "-A", "-D", "-s", "main"]
 

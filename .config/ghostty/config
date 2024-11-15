@@ -1,5 +1,11 @@
-font-family = JetBrainsMono Nerd Font Propo
+theme       = terafox
+font-family = JetBrainsMono Nerd Font Mono
 font-size   = 15
+font-style  = Regular
+font-style-bold = Bold
+font-style-italic = Italic
+font-style-bold-italic = Bold Italic
+font-thicken = false
 
 mouse-hide-while-typing = true
 clipboard-read = allow
@@ -9,6 +15,9 @@ window-decoration = true
 macos-window-shadow = false
 # macos-titlebar-style = hidden
 quit-after-last-window-closed = true
+window-padding-balance = true
+window-save-state = always
+window-new-tab-position = end
 
 # Vertical split
 keybind = ctrl+f>ctrl+v=new_split:right
@@ -41,4 +50,7 @@ keybind = ctrl+f>9=goto_tab:9
 
 # Clear buffer
 keybind = ctrl+f>ctrl+l=clear_screen
+
+# Reload ghostty config
+keybind = ctrl+f>ctrl+r=reload_config
 

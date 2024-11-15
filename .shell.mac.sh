@@ -36,6 +36,30 @@ alias ghprd="gh pr create -d"
 # View the pr
 alias ghpr="gh pr view --web"
 
+ghco() {
+  gh pr list \
+    --author "@me" \
+    --json number,title,url,headRefName,state,isDraft,createdAt \
+    --template '{{range .}}{{.number}}{{"\t"}}{{.title}}{{"\t"}}{{.headRefName}}{{"\t"}}{{.state}}{{"\t"}}{{.isDraft}}{{"\t"}}{{timeago .createdAt}}{{"\t"}}{{end}}' \
+    | fzf --header 'checkout PR' \
+    | awk '{print $(NF-5)}' \
+    | xargs git checkout
+}
+
+gplog() {
+  HASH="%C(always,yellow)%h%C(always,reset)"
+  RELATIVE_TIME="%C(always,green)%ar%C(always,reset)"
+  AUTHOR="%C(always,bold blue)%an%C(always,reset)"
+  REFS="%C(always,red)%d%C(always,reset)"
+  SUBJECT="%s"
+
+  FORMAT="$HASH $RELATIVE_TIME{$AUTHOR{$REFS $SUBJECT"
+
+  git log --graph --pretty="tformat:$FORMAT" $* |
+  column -t -s '{' |
+  less -XRS --quit-if-one-screen
+}
+
 function zvm_after_init() {
   [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh
   eval "$(starship init zsh)"
@@ -102,6 +126,9 @@ eval "$(fnm env --use-on-cd)"
 
 # jump
 eval "$(jump shell)"
+
+# keybindings
+bindkey '^[^?' backward-kill-word # Alt + Backspace
 
 # load user specific configuration
 [ -f "$HOME/.shell.user.sh" ] && source "$HOME/.shell.user.sh"

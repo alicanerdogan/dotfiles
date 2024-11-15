@@ -354,7 +354,7 @@ local function set_up_nvim_only_plugins(plugins)
               i = {
                 ["<C-k>"] = require("telescope-live-grep-args.actions").quote_prompt({
                   postfix =
-                  " --fixed-strings -g !*.test.ts -g !*.spec.ts -g !*.md -g !*.graphql -g !*.json -g !*.lock -g !*.mock"
+                  " --case-sensitive --fixed-strings -g !*.test.html -g !*.test.ts -g !*.spec.ts -g !*.md -g !*.graphql -g !*.json -g !*.lock -g !*.mock"
                 }),
               },
             },

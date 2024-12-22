@@ -40,7 +40,7 @@ ghco() {
   gh pr list \
     --author "@me" \
     --json number,title,url,headRefName,state,isDraft,createdAt \
-    --template '{{range .}}{{.number}}{{"\t"}}{{.title}}{{"\t"}}{{.headRefName}}{{"\t"}}{{.state}}{{"\t"}}{{.isDraft}}{{"\t"}}{{timeago .createdAt}}{{"\t"}}{{end}}' \
+    --template '{{range .}}{{.number}}{{"\t"}}{{.title}}{{"\t"}}{{.headRefName}}{{"\t"}}{{.state}}{{"\t"}}{{.isDraft}}{{"\t"}}{{timeago .createdAt}}{{"\n"}}{{end}}' \
     | fzf --header 'checkout PR' \
     | awk '{print $(NF-5)}' \
     | xargs git checkout
@@ -58,6 +58,15 @@ gplog() {
   git log --graph --pretty="tformat:$FORMAT" $* |
   column -t -s '{' |
   less -XRS --quit-if-one-screen
+}
+
+gswx() {
+  branch=$1
+  if [ -z "$branch" ]; then
+    git switch $(git branch --sort=-committerdate | grep -v "\*" | fzf)
+  else
+    git switch $branch
+  fi
 }
 
 function zvm_after_init() {
@@ -107,6 +116,24 @@ togglenvimtheme() {
 toggletheme() {
   togglealacrittytheme
   togglenvimtheme
+}
+
+notify() {
+  DEFAULT_TITLE='Command Complete'
+  DEFAULT_SUBTITLE=''
+  TITLE=$DEFAULT_TITLE
+  SUBTITLE=$DEFAULT_SUBTITLE
+  if [ -n "$1" ]; then
+    TITLE=$1
+  fi
+  osascript -e "display notification \"Terminal\" with title \"$TITLE\" subtitle \"$SUBTITLE\" sound name \"Blow\""
+}
+
+convert() {
+  filepath=$1
+  filename=$(basename "$filepath")
+  filename="${filename%.*}"
+  ffmpeg -i $filepath -c:v libx264 -vf scale=-2:720 -crf 28 -preset veryslow -an "$filename.mp4"
 }
 
 alias p="pnpm"

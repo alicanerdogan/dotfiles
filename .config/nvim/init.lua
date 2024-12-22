@@ -126,6 +126,31 @@ local function set_up_global_config()
   vim.opt.virtualedit = "block" -- Allow cursor to move where there is no text in visual block mode
   vim.opt.cmdheight = 0         -- Hide the command line when it is not active
 
+  -- Set filetype to `bigfile` for files larger than 1MB
+  -- Only vim syntax will be enabled (with the correct filetype)
+  -- LSP, treestitter and the other ft plugins will be disabled.
+  vim.g.bigfile_size = 1024 * 1024 * 1
+  vim.filetype.add({
+    pattern = {
+      [".*"] = {
+        function(path, buf)
+          return vim.bo[buf].filetype ~= "bigfile" and path and vim.fn.getfsize(path) > vim.g.bigfile_size and "bigfile" or
+              nil
+        end,
+      },
+    },
+  })
+  vim.api.nvim_create_autocmd({ "FileType", }, {
+    group = vim.api.nvim_create_augroup("bigfile", { clear = true }),
+    pattern = "bigfile",
+    callback = function(ev)
+      vim.b.minianimate_disable = true
+      vim.schedule(function()
+        vim.bo[ev.buf].syntax = vim.filetype.match({ buf = ev.buf }) or ""
+      end)
+    end,
+  })
+
   local os_uname = vim.loop.os_uname().sysname
   if os_uname == "Darwin" then
     vim.opt.clipboard = 'unnamed'
@@ -194,6 +219,10 @@ local function set_up_nvim_only_config()
 
       local win = get_term_window()
       if win == nil then
+        local neotree_is_active = vim.endswith(current_buffer_name, 'neo-tree filesystem [1]')
+        if neotree_is_active then
+          vim.cmd(':Neotree close')
+        end
         -- activate the terminal
         vim.cmd(':ToggleTerm')
         return
@@ -245,7 +274,20 @@ end
 ---------------------
 
 local function set_up_global_plugins(plugins)
-  table.insert(plugins, { "tpope/vim-surround" })
+  table.insert(plugins, {
+    "echasnovski/mini.ai",
+    version = '*',
+    config = function()
+      require("mini.ai").setup()
+    end,
+  })
+  table.insert(plugins, {
+    "echasnovski/mini.surround",
+    version = '*',
+    config = function()
+      require("mini.ai").setup()
+    end,
+  })
   table.insert(plugins, {
     "folke/ts-comments.nvim",
     opts = {},
@@ -309,118 +351,75 @@ local function set_up_nvim_only_plugins(plugins)
       })
     end,
   })
-  table.insert(plugins, { "nvim-telescope/telescope-fzf-native.nvim", build = 'make' })
-  table.insert(plugins, { "nvim-telescope/telescope-ui-select.nvim" })
   table.insert(plugins, {
-    "nvim-telescope/telescope.nvim",
-    tag = '0.1.4',
+    "ibhagwan/fzf-lua",
     dependencies = {
-      "nvim-lua/plenary.nvim",
-      "nvim-treesitter/nvim-treesitter",
       "nvim-tree/nvim-web-devicons",
-      "smartpde/telescope-recent-files",
-      "nvim-telescope/telescope-live-grep-args.nvim",
-      "natecraddock/telescope-zf-native.nvim"
     },
     config = function()
-      require("telescope").setup({
-        extensions = {
-          fzf = {
-            fuzzy = true,                   -- false will only do exact matching
-            override_generic_sorter = true, -- override the generic sorter
-            override_file_sorter = false,   -- override the file sorter
-            case_mode = "smart_case",       -- or "ignore_case" or "respect_case"
-            -- the default case_mode is "smart_case"
-          },
-          ["zf-native"] = {
-            file = {
-              enable = true,
-              highlight_results = true,
-              match_filename = true,
+      require("fzf-lua").setup({
+        grep = {
+          actions = {
+            ["ctrl-q"] = {
+              -- Send results to the quickfix list
+              fn = require("fzf-lua").actions.file_edit_or_qf,
+              prefix = "select-all+",
             },
-            generic = {
-              enable = false,
-            },
-          },
-          recent_files = {
-            stat_files = true,
-            ignore_patterns = { "/tmp/", ".git/" },
-            only_cwd = true,
-            show_current_file = false,
-          },
-          live_grep_args = {
-            auto_quoting = true, -- enable/disable auto-quoting
-            mappings = {         -- extend mappings
-              i = {
-                ["<C-k>"] = require("telescope-live-grep-args.actions").quote_prompt({
-                  postfix =
-                  " --case-sensitive --fixed-strings -g !*.test.html -g !*.test.ts -g !*.spec.ts -g !*.md -g !*.graphql -g !*.json -g !*.lock -g !*.mock"
-                }),
-              },
+            ["ctrl-c"] = {
+              fn = function()
+                -- TODO: clear search query
+              end,
             },
           },
         },
-        pickers = {
-          oldfiles = {
-            only_cwd = true,
-          },
-          find_files = {
-            find_command = { 'git', 'ls-files', '--exclude-standard', '--others', '--cached', '--', '.' },
-          },
-        },
+        glob = {
+          rg_glob = true,
+          -- first returned string is the new search query
+          -- second returned string are (optional) additional rg flags
+          -- @return string, string?
+          rg_glob_fn = function(query, opts)
+            local regex, flags = query:match("^(.-)%s%-%-(.*)$")
+            -- If no separator is detected wil return the original query
+            return (regex or query), flags
+          end,
+        }
       })
-
-      -- To get fzf loaded and working with telescope, you need to call
-      -- load_extension, somewhere after setup function:
-      require('telescope').load_extension('fzf')
-      require("telescope").load_extension("zf-native")
-
-      -- To get ui-select loaded and working with telescope, you need to call
-      -- load_extension, somewhere after setup function:
-      require("telescope").load_extension("ui-select")
-
-      require("telescope").load_extension("recent_files")
-      require("telescope").load_extension("live_grep_args")
-    end,
-  })
-
-  table.insert(plugins, {
-    "folke/tokyonight.nvim",
-    lazy = false,
-    priority = 1000,
-    opts = {
-    },
-    config = function()
-      require("tokyonight").setup({
-      })
-      -- vim.cmd[[colorscheme tokyonight]]
-      -- vim.opt.background = 'light'
-    end,
-  })
-
-  table.insert(plugins, {
-    'Shatur/neovim-ayu',
-    config = function()
-      require('ayu').setup({
-        mirage = false,
-      })
-      -- vim.cmd [[colorscheme ayu]]
-    end,
-  })
-
-  table.insert(plugins, {
-    'projekt0n/github-nvim-theme',
-    lazy = false,    -- make sure we load this during startup if it is your main colorscheme
-    priority = 1000, -- make sure to load this before all the other start plugins
-    config = function()
-      require('github-theme').setup({
-        -- ...
-      })
-
-      -- vim.cmd('colorscheme github_dark_dimmed')
-      -- vim.cmd('colorscheme github_dark_colorblind')
-      -- vim.cmd('colorscheme github_light')
-      -- vim.cmd('colorscheme github_light_colorblind')
+      -- searching within git tracked files
+      vim.keymap.set('n', '<C-p>', function() require('fzf-lua').files({ cwd_prompt = false, previewer = false }) end,
+        { noremap = true, desc = "Find files in the current directory" })
+      -- searching with git tracked files
+      vim.keymap.set('n', '<leader>ff', function()
+          require('fzf-lua').live_grep_glob({
+            no_esc = true,
+            search = " -- !*.test.html !*.test.ts !*.spec.ts !*.md !*.graphql !*.json !*.lock !*.mock",
+            winopts = {
+              on_create = function()
+                -- synthetically press ctrl-a to move the cursor to the beginning of the line
+                vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-a>", true, true, true), "n", true)
+              end,
+            }
+          })
+        end,
+        { noremap = true, desc = "Search in current directory" })
+      -- searching the word under the cursor within git tracked files
+      vim.keymap.set('n', '<leader>fg', function() require('fzf-lua').grep_cword() end,
+        { noremap = true, desc = "search current word in current directory" })
+      vim.keymap.set('v', '<leader>fg', function() require('fzf-lua').grep_cword() end,
+        { noremap = true, desc = "search current word in current directory" })
+      -- searching symbols in the document
+      vim.keymap.set('n', '<leader>fs', function() require('fzf-lua').treesitter({ previewer = false }) end,
+        { noremap = true, desc = "Search symbols in the buffer" })
+      -- searching symbols in the workspace
+      vim.keymap.set('n', '<leader>fws',
+        function() require('fzf-lua').lsp_live_workspace_symbols({ previewer = false }) end,
+        { noremap = true, desc = "Search symbols in the current directory" })
+      -- searching within recent files
+      vim.keymap.set('n', '<leader>fr',
+        function() require('fzf-lua').oldfiles({ cwd = get_root_directory(), previewer = false }) end,
+        { noremap = true, desc = "Search in recent files" })
+      -- searching within modified files
+      vim.keymap.set('n', '<leader>fm', function() require('fzf-lua').git_status() end,
+        { noremap = true, desc = "Search in modified files" })
     end,
   })
 
@@ -693,101 +692,102 @@ local function set_up_nvim_only_plugins(plugins)
   })
 
   table.insert(plugins, {
-    'VonHeikemen/lsp-zero.nvim',
-    branch = 'v4.x',
+    'saghen/blink.cmp',
+    version = 'v0.*',
+    dependencies = {
+      { 'L3MON4D3/LuaSnip', version = 'v2.*' },
+    },
+    opts = {
+      keymap = { preset = 'super-tab' },
+      appearance = {
+        nerd_font_variant = 'mono',
+      },
+      sources = {
+        default = { 'lsp', 'path', 'snippets', 'buffer' }
+      },
+      snippets = {
+        expand = function(snippet) require('luasnip').lsp_expand(snippet) end,
+        active = function(filter)
+          if filter and filter.direction then
+            return require('luasnip').jumpable(filter.direction)
+          end
+          return require('luasnip').in_snippet()
+        end,
+        jump = function(direction)
+          require('luasnip').jump(direction)
+        end,
+      },
+      completion = {
+        documentation = {
+          auto_show = true,
+        },
+      },
+    },
+    opts_extend = {
+      "sources.default",
+    },
+  })
+  table.insert(plugins, {
+    'neovim/nvim-lspconfig',
     dependencies = {
       -- LSP Support
       { 'williamboman/mason.nvim' },
       { 'williamboman/mason-lspconfig.nvim' },
-      { 'neovim/nvim-lspconfig' },
 
       -- Autocompletion
-      { 'L3MON4D3/LuaSnip' },
-      { 'hrsh7th/nvim-cmp' },
-      { 'hrsh7th/cmp-nvim-lsp' },
-      { 'saadparwaiz1/cmp_luasnip' },
+      {
+        'saghen/blink.cmp',
+        version = 'v0.*',
+      },
+      {
+        'L3MON4D3/LuaSnip',
+        version = 'v2.*',
+      },
     },
     config = function()
-      local cmp = require('cmp')
-
-      cmp.setup({
-        snippet = {
-          expand = function(args)
-            require("luasnip").lsp_expand(args.body)
-          end
-        },
-        mapping = cmp.mapping.preset.insert({
-          ['<CR>'] = cmp.mapping.confirm({ select = false }),
-          ['<C-Space>'] = cmp.mapping.complete(),
-          ["<Tab>"] = cmp.mapping(function(fallback)
-            local has_words_before = function()
-              unpack = unpack or table.unpack
-              local line, col = unpack(vim.api.nvim_win_get_cursor(0))
-              return col ~= 0 and vim.api.nvim_buf_get_lines(0, line - 1, line, true)[1]:sub(col, col):match("%s") == nil
-            end
-
-            local luasnip = require('luasnip')
-
-            if cmp.visible() then
-              cmp.select_next_item()
-              -- You could replace the expand_or_jumpable() calls with expand_or_locally_jumpable()
-              -- they way you will only jump inside the snippet region
-            elseif luasnip.expand_or_jumpable() then
-              luasnip.expand_or_jump()
-            elseif has_words_before() then
-              cmp.complete()
-            else
-              fallback()
-            end
-          end, { "i", "s" }),
-          ["<S-Tab>"] = cmp.mapping(function(fallback)
-            local luasnip = require('luasnip')
-            if cmp.visible() then
-              cmp.select_prev_item()
-            elseif luasnip.jumpable(-1) then
-              luasnip.jump(-1)
-            else
-              fallback()
-            end
-          end, { "i", "s" }),
-        }),
-        sources = cmp.config.sources({
-          { name = 'nvim_lsp' },
-          { name = 'luasnip' },
-        }, {
-          { name = 'buffer' },
-        })
-      })
-
-      local lsp = require('lsp-zero')
-
-      local lsp_attach = function(client, bufnr)
-        -- see :help lsp-zero-keybindings
-        -- to learn the available actions
-        lsp.default_keymaps({ buffer = bufnr })
-      end
-
-      lsp.extend_lspconfig({
-        sign_text = true,
-        lsp_attach = lsp_attach,
-        float_border = 'rounded',
-        capabilities = require('cmp_nvim_lsp').default_capabilities()
-      })
-
       local lspconfig = require('lspconfig')
+      -- Reserve a space in the gutter
+      vim.opt.signcolumn = 'yes'
 
       require('mason').setup({})
       require('mason-lspconfig').setup({
         ensure_installed = { 'lua_ls', 'ts_ls', 'eslint' },
         handlers = {
           function(server_name)
-            lspconfig[server_name].setup({})
+            local capabilities = require('blink.cmp').get_lsp_capabilities()
+            lspconfig[server_name].setup({
+              capabilities = capabilities,
+            })
           end,
           lua_ls = function()
-            lspconfig.lua_ls.setup(lsp.nvim_lua_ls())
+            local capabilities = require('blink.cmp').get_lsp_capabilities()
+            lspconfig.lua_ls.setup({
+              capabilities = capabilities,
+              settings = {
+                Lua = {
+                  runtime = {
+                    version = 'LuaJIT',
+                  },
+                  diagnostics = {
+                    globals = {
+                      'vim',
+                      'require',
+                    },
+                  },
+                  workspace = {
+                    library = vim.api.nvim_get_runtime_file("", true),
+                  },
+                  telemetry = {
+                    enable = false,
+                  },
+                },
+              },
+            })
           end,
           ts_ls = function()
+            local capabilities = require('blink.cmp').get_lsp_capabilities()
             lspconfig.ts_ls.setup({
+              capabilities = capabilities,
               on_init = function()
                 lspconfig.ts_ls.setup({
                   handlers = {
@@ -1001,14 +1001,6 @@ local function set_up_nvim_only_plugins(plugins)
   })
 
   table.insert(plugins, {
-    "ThePrimeagen/harpoon",
-    dependencies = { "nvim-lua/plenary.nvim" },
-    config = function()
-      require("telescope").load_extension('harpoon')
-    end,
-  })
-
-  table.insert(plugins, {
     "chrisgrieser/nvim-spider",
     config = function()
       require("spider").setup {
@@ -1076,27 +1068,27 @@ local function set_up_nvim_only_plugins(plugins)
 
   table.insert(plugins, {
     "CopilotC-Nvim/CopilotChat.nvim",
-    branch = "canary",
-    event = "VeryLazy",
     dependencies = {
       { "github/copilot.vim" },
-      { "nvim-lua/plenary.nvim" },
-      { "nvim-telescope/telescope.nvim" },
+      { "nvim-lua/plenary.nvim", branch = "master" },
     },
+    build = "make tiktoken",
     config = function()
       require("CopilotChat").setup {
-        debug = true,                     -- Enable debug logging
-        show_user_selection = true,       -- Shows user selection in chat
-        show_system_prompt = false,       -- Shows system prompt in chat
-        show_folds = true,                -- Shows folds for sections in chat
-        clear_chat_on_new_prompt = false, -- Clears chat on every new prompt
-        auto_follow_cursor = true,        -- Auto-follow cursor in chat
-        name = 'CopilotChat',             -- Name to use in chat
-        separator = '---',                -- Separator to use in chat
+        model = 'gpt-4o',
+        agent = 'copilot',
+        temperature = 0.1,
         -- default window options
         window = {
-          layout = 'vertical', -- 'vertical', 'horizontal', 'float'
+          layout = 'vertical',     -- 'vertical', 'horizontal', 'float'
         },
+        show_folds = true,         -- Shows folds for sections in chat
+        auto_follow_cursor = true, -- Auto-follow cursor in chat
+        chat_autocomplete = true,
+        history_path = vim.fn.stdpath('data') .. '/copilotchat_history',
+        clear_chat_on_new_prompt = false, -- Clears chat on every new prompt
+        name = 'CopilotChat',             -- Name to use in chat
+        separator = '---',                -- Separator to use in chat
         -- default mappings
         mappings = {
           complete = {
@@ -1117,6 +1109,25 @@ local function set_up_nvim_only_plugins(plugins)
           },
           show_diff = {
             normal = '<C-d>',
+          },
+        },
+        contexts = {
+          git_branch = {
+            resolve = function()
+              local cmd = {
+                'git',
+                'rev-parse',
+                '--abbrev-ref',
+                'HEAD',
+              }
+              local out = vim.fn.systemlist(cmd)
+
+              return {
+                content = out[1],
+                finame = 'git_branch',
+                filetype = 'text',
+              }
+            end,
           },
         },
       }
@@ -1311,31 +1322,6 @@ local function set_up_nvim_only_keybindings()
   -- reloads the config
   vim.keymap.set('n', '<leader><CR>', ':so ~/.config/nvim/init.lua<CR>',
     { noremap = true, desc = "Re-source configuration" })
-  -- searching within git tracked files
-  vim.keymap.set('n', '<C-p>', ':Telescope find_files<CR>',
-    { noremap = true, desc = "Find files in the current directory" })
-
-  -- searching within git tracked files
-  vim.keymap.set('n', '<leader>ff', ':lua require("telescope").extensions.live_grep_args.live_grep_args()<CR>',
-    { noremap = true, desc = "Search in current directory" })
-  -- searching the word under the cursor within git tracked files
-  vim.keymap.set('n', '<leader>fg', ':Telescope grep_string<CR>',
-    { noremap = true, desc = "Search current word in current directory" })
-  -- searching symbols in the document
-  vim.keymap.set('n', '<leader>fs', ':lua require("telescope.builtin").lsp_document_symbols()<CR>',
-    { noremap = true, desc = "Search symbols in the buffer" })
-  -- searching symbols in the workspace
-  vim.keymap.set('n', '<leader>fws', ':lua require("telescope.builtin").lsp_dynamic_workspace_symbols()<CR>',
-    { noremap = true, desc = "Search symbols in the current directory" })
-  -- searching within recent files
-  vim.keymap.set('n', '<leader>fr', ':lua require("telescope").extensions.recent_files.pick()<CR>',
-    { noremap = true, desc = "Search in recent files" })
-  -- searching within modified files
-  vim.keymap.set('n', '<leader>fm', ':lua require("telescope.builtin").git_status({})<CR>',
-    { noremap = true, desc = "Search in modified git files" })
-  -- searching within harpoon marks
-  vim.keymap.set('n', '<leader>fh', ':Telescope harpoon marks<CR>',
-    { noremap = true, desc = "Search in harpoon marks" })
 
   -- MARKING
   -- Mark a file
@@ -1371,7 +1357,7 @@ local function set_up_nvim_only_keybindings()
   -- JUMP
   -- to definition
   vim.keymap.set('n', '<leader>jd', '<Cmd>lua vim.lsp.buf.definition()<CR>', { desc = "Jump to definition" })
-  vim.keymap.set('n', '<leader>jD', '<cmd>lua require"telescope.builtin".lsp_definitions({jump_type="vsplit"})<CR>',
+  vim.keymap.set('n', '<leader>jD', '<cmd>vsplit | lua vim.lsp.buf.definition()<CR>',
     { desc = "Jump to definition in split" })
   -- to type definition
   vim.keymap.set('n', '<leader>jt', '<Cmd>lua vim.lsp.buf.type_definition()<CR>', { desc = "Jump to type definition" })

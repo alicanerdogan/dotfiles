@@ -285,7 +285,7 @@ local function set_up_global_plugins(plugins)
     "echasnovski/mini.surround",
     version = '*',
     config = function()
-      require("mini.ai").setup()
+      require("mini.surround").setup()
     end,
   })
   table.insert(plugins, {
@@ -331,6 +331,10 @@ local function set_up_nvim_only_plugins(plugins)
             }
           },
           lualine_y = {
+            {
+              'searchcount',
+              cond = condFn,
+            }
           },
           lualine_z = {
             {
@@ -358,6 +362,9 @@ local function set_up_nvim_only_plugins(plugins)
     },
     config = function()
       require("fzf-lua").setup({
+        files = {
+          formatter = "path.filename_first",
+        },
         grep = {
           actions = {
             ["ctrl-q"] = {
@@ -428,6 +435,29 @@ local function set_up_nvim_only_plugins(plugins)
     lazy = false,
     priority = 1000,
     config = set_theme,
+  })
+
+  table.insert(plugins, {
+    "3rd/image.nvim",
+    opts = {},
+    config = function()
+      require("image").setup({
+        backend = "kitty",
+        processor = "magick_cli",
+        integrations = {
+          markdown = {
+            enabled = true,
+            clear_in_insert_mode = true,
+            download_remote_images = true,
+            only_render_image_at_cursor = true,
+          },
+        },
+        max_width_window_percentage = 100,
+        max_height_window_percentage = 100,
+        window_overlap_clear_enabled = true,
+        scale_factor = 3.0,
+      })
+    end,
   })
 
   table.insert(plugins, {
@@ -508,6 +538,7 @@ local function set_up_nvim_only_plugins(plugins)
           end
         end,
         start_in_insert = true,
+        persist_mode = false,
         direction = 'vertical',
         close_on_exit = true, -- close the terminal window when the process exits
         -- Change the default shell. Can be a string or a function returning a string
@@ -698,7 +729,13 @@ local function set_up_nvim_only_plugins(plugins)
       { 'L3MON4D3/LuaSnip', version = 'v2.*' },
     },
     opts = {
-      keymap = { preset = 'super-tab' },
+      keymap = {
+        preset = 'super-tab',
+        ['<CR>'] = { 'accept', 'fallback' },
+        cmdline = {
+          ['<CR>'] = { 'fallback' },
+        },
+      },
       appearance = {
         nerd_font_variant = 'mono',
       },

@@ -18,6 +18,7 @@ quit-after-last-window-closed = true
 window-padding-balance = true
 window-save-state = always
 window-new-tab-position = end
+link-url = true
 
 # Vertical split
 keybind = ctrl+f>ctrl+v=new_split:right

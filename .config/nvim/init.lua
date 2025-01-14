@@ -111,6 +111,40 @@ local function sql_formatter_exists()
   return file_exists(sql_formatter_path)
 end
 
+local function run_async_command(command, on_complete)
+  local stdout_data = {}
+  local stderr_data = {}
+
+  local job_id = vim.fn.jobstart(command, {
+    on_stdout = function(_, data)
+      for _, line in ipairs(data) do
+        if line ~= "" then
+          table.insert(stdout_data, line)
+        end
+      end
+    end,
+    on_stderr = function(_, data)
+      for _, line in ipairs(data) do
+        if line ~= "" then
+          table.insert(stderr_data, line)
+        end
+      end
+    end,
+    on_exit = function(_, code)
+      if on_complete then
+        on_complete({
+          success = code == 0,
+          code = code,
+          stdout = table.concat(stdout_data, "\n"),
+          stderr = table.concat(stderr_data, "\n"),
+        })
+      end
+    end,
+  })
+
+  return job_id
+end
+
 -- Utility functions end
 
 local function set_up_global_config()
@@ -191,6 +225,40 @@ local function set_up_nvim_only_config()
   vim.api.nvim_create_user_command('CopyRelPath',
     function()
       vim.api.nvim_call_function("setreg", { "+", vim.fn.fnamemodify(vim.fn.expand("%"), ":.") })
+    end,
+    { nargs = 0 })
+
+  -- Copy github permalink of the current file to clipboard
+  vim.api.nvim_create_user_command('CopyGithubPermalink',
+    function()
+      local relative_path = vim.fn.fnamemodify(vim.fn.expand("%"), ":.")
+      run_async_command("gh browse " .. relative_path .. " --no-browser --commit=$(git rev-parse HEAD)",
+        function(result)
+          if result.success then
+            vim.api.nvim_call_function("setreg", { "+", result.stdout })
+          else
+            print("Failed to copy github permalink")
+            print(result.stderr)
+          end
+        end)
+    end,
+    { nargs = 0 })
+
+  -- Copy github permalink of the current line to clipboard
+  vim.api.nvim_create_user_command('CopyGithubPermalinkLine',
+    function()
+      local relative_path = vim.fn.fnamemodify(vim.fn.expand("%"), ":.")
+      local line_number = vim.fn.line(".")
+      run_async_command(
+        "gh browse " .. relative_path .. ":" .. line_number .. " --no-browser --commit=$(git rev-parse HEAD)",
+        function(result)
+          if result.success then
+            vim.api.nvim_call_function("setreg", { "+", result.stdout })
+          else
+            print("Failed to copy github permalink line")
+            print(result.stderr)
+          end
+        end)
     end,
     { nargs = 0 })
 
@@ -366,6 +434,7 @@ local function set_up_nvim_only_plugins(plugins)
           formatter = "path.filename_first",
         },
         grep = {
+          formatter = "path.filename_first",
           actions = {
             ["ctrl-q"] = {
               -- Send results to the quickfix list
@@ -380,6 +449,7 @@ local function set_up_nvim_only_plugins(plugins)
           },
         },
         glob = {
+          formatter = "path.filename_first",
           rg_glob = true,
           -- first returned string is the new search query
           -- second returned string are (optional) additional rg flags
@@ -400,6 +470,9 @@ local function set_up_nvim_only_plugins(plugins)
             no_esc = true,
             search = " -- !*.test.html !*.test.ts !*.spec.ts !*.md !*.graphql !*.json !*.lock !*.mock",
             winopts = {
+              preview = {
+                delay = 500,
+              },
               on_create = function()
                 -- synthetically press ctrl-a to move the cursor to the beginning of the line
                 vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-a>", true, true, true), "n", true)
@@ -439,6 +512,7 @@ local function set_up_nvim_only_plugins(plugins)
 
   table.insert(plugins, {
     "3rd/image.nvim",
+    enabled = vim.env.TMUX == nil,
     opts = {},
     config = function()
       require("image").setup({
@@ -447,9 +521,9 @@ local function set_up_nvim_only_plugins(plugins)
         integrations = {
           markdown = {
             enabled = true,
-            clear_in_insert_mode = true,
+            clear_in_insert_mode = false,
             download_remote_images = true,
-            only_render_image_at_cursor = true,
+            only_render_image_at_cursor = false,
           },
         },
         max_width_window_percentage = 100,
@@ -731,16 +805,12 @@ local function set_up_nvim_only_plugins(plugins)
     opts = {
       keymap = {
         preset = 'super-tab',
-        ['<CR>'] = { 'accept', 'fallback' },
-        cmdline = {
-          ['<CR>'] = { 'fallback' },
-        },
       },
       appearance = {
         nerd_font_variant = 'mono',
       },
       sources = {
-        default = { 'lsp', 'path', 'snippets', 'buffer' }
+        default = { 'lsp', 'path', 'snippets' }
       },
       snippets = {
         expand = function(snippet) require('luasnip').lsp_expand(snippet) end,
@@ -787,6 +857,7 @@ local function set_up_nvim_only_plugins(plugins)
       vim.opt.signcolumn = 'yes'
 
       require('mason').setup({})
+      ---@diagnostic disable-next-line: missing-fields
       require('mason-lspconfig').setup({
         ensure_installed = { 'lua_ls', 'ts_ls', 'eslint' },
         handlers = {

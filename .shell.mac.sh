@@ -154,6 +154,8 @@ eval "$(fnm env --use-on-cd)"
 # jump
 eval "$(jump shell)"
 
+export EDITOR=nvim
+
 # keybindings
 bindkey '^[^?' backward-kill-word # Alt + Backspace
 

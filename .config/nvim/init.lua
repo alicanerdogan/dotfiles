@@ -346,7 +346,12 @@ local function set_up_global_plugins(plugins)
     "echasnovski/mini.ai",
     version = '*',
     config = function()
-      require("mini.ai").setup()
+      local MiniAI = require("mini.ai")
+      MiniAI.setup({
+        custom_textobjects = {
+          D = MiniAI.gen_spec.treesitter({ a = '@assignment.outer', i = '@assignment.inner' }),
+        }
+      })
     end,
   })
   table.insert(plugins, {

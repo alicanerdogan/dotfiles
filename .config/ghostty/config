@@ -60,3 +60,6 @@ keybind = ctrl+f>ctrl+l=clear_screen
 # Reload ghostty config
 keybind = ctrl+f>ctrl+r=reload_config
 
+# Copy mode
+keybind = ctrl+f>/=write_screen_file:paste
+

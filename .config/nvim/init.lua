@@ -145,6 +145,11 @@ local function run_async_command(command, on_complete)
   return job_id
 end
 
+local resize_windows = function()
+  local current_tab = vim.api.nvim_get_current_tabpage()
+  vim.cmd("tabdo wincmd =")
+  vim.api.nvim_set_current_tabpage(current_tab)
+end
 -- Utility functions end
 
 local function set_up_global_config()
@@ -183,6 +188,12 @@ local function set_up_global_config()
         vim.bo[ev.buf].syntax = vim.filetype.match({ buf = ev.buf }) or ""
       end)
     end,
+  })
+
+  vim.api.nvim_create_autocmd({ "VimResized" }, {
+    group = vim.api.nvim_create_augroup("EqualizeSplits", {}),
+    callback = resize_windows,
+    desc = "Resize splits with terminal window",
   })
 
   local os_uname = vim.loop.os_uname().sysname
@@ -282,6 +293,7 @@ local function set_up_nvim_only_config()
       local current_buffer_name = vim.api.nvim_buf_get_name(0)
       if vim.endswith(current_buffer_name, term_buff_name_postfix) then
         vim.cmd(':ToggleTerm')
+        resize_windows()
         return
       end
 
@@ -293,6 +305,7 @@ local function set_up_nvim_only_config()
         end
         -- activate the terminal
         vim.cmd(':ToggleTerm')
+        resize_windows()
         return
       else
         -- pick the terminal
@@ -618,6 +631,7 @@ local function set_up_nvim_only_plugins(plugins)
         end,
         start_in_insert = true,
         persist_mode = false,
+        persist_size = false,
         direction = 'vertical',
         close_on_exit = true, -- close the terminal window when the process exits
         -- Change the default shell. Can be a string or a function returning a string
@@ -1187,7 +1201,8 @@ local function set_up_nvim_only_plugins(plugins)
     },
     build = "make tiktoken",
     config = function()
-      require("CopilotChat").setup {
+      local chat = require("CopilotChat")
+      chat.setup {
         model = 'gpt-4o',
         agent = 'copilot',
         temperature = 0.1,
@@ -1225,25 +1240,88 @@ local function set_up_nvim_only_plugins(plugins)
           },
         },
         contexts = {
-          git_branch = {
+          git_pr_template = {
             resolve = function()
-              local cmd = {
-                'git',
-                'rev-parse',
-                '--abbrev-ref',
-                'HEAD',
-              }
-              local out = vim.fn.systemlist(cmd)
+              local cmd = "cat .github/PULL_REQUEST_TEMPLATE.md"
+              local pr_template = table.concat(vim.fn.systemlist(cmd), "\n")
 
               return {
-                content = out[1],
-                finame = 'git_branch',
-                filetype = 'text',
+                {
+                  content = pr_template,
+                  filename = "PULL_REQUEST_TEMPLATE.md",
+                  filetype = "markdown",
+                }
+              }
+            end,
+          },
+          git_main_diff = {
+            resolve = function()
+              local main_branch = vim.fn.system('git symbolic-ref --short HEAD | sed \'s/refs\\/remotes\\/origin\\///\'')
+              main_branch = main_branch:gsub("^%s*(.-)%s*$", "%1")
+
+              local cmd = 'git diff --no-ext-diff origin/' .. main_branch .. '..HEAD'
+              local diff = table.concat(vim.fn.systemlist(cmd), "\n")
+
+              return {
+                {
+                  content = diff,
+                  filename = "main.diff",
+                  filetype = "diff",
+                }
+              }
+            end,
+          },
+          jira_current_task = {
+            resolve = function()
+              local cmd = ('echo $(git branch --show-current) | sed "s/^\\([^-]*-[^-]*\\).*/\\1/"')
+              local current_task = vim.fn.system(cmd)
+              current_task = current_task:gsub("^%s*(.-)%s*$", "%1")
+
+              return {
+                {
+                  content = current_task,
+                  filename = "jira_current_task",
+                  filetype = "text",
+
+                }
+              }
+            end,
+          },
+          git_branch = {
+            resolve = function()
+              local cmd = "git branch --show-current"
+              local current_branch = vim.fn.system(cmd)
+              current_branch = current_branch:gsub("^%s*(.-)%s*$", "%1")
+
+              return {
+                {
+                  content = current_branch,
+                  filename = 'git_branch',
+                  filetype = 'text',
+                }
               }
             end,
           },
         },
       }
+
+      vim.api.nvim_create_user_command('CopilotChatGeneratePR',
+        function()
+          local cmd = {
+            "Pull request template that is used in this repository:",
+            "#git_pr_template",
+            "Diff with the main branch:",
+            "#git_main_diff",
+            "Name of the current JIRA task (it can be used to replace TICKET_NUM inside the template:",
+            "#jira_current_task",
+            "Could you generate me a markdown file for this branch and fill the pull request template with the context I provided?",
+            "You can remove the comments in the template except for the screenshots section."
+          }
+          chat.open()
+          chat.reset()
+          chat.ask(table.concat(cmd, "\n"))
+        end,
+        { nargs = 0 })
       vim.keymap.set('n', '<leader>aa', '<cmd>:CopilotChatOpen<CR>',
         { desc = "Copilot Chat - Open", silent = true })
       vim.keymap.set('v', '<leader>ae', '<cmd>:CopilotChatExplain<CR>',

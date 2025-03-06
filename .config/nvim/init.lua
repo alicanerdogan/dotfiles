@@ -164,6 +164,7 @@ local function set_up_global_config()
   vim.opt.cursorline = true     -- Adds a highlight to the current line
   vim.opt.virtualedit = "block" -- Allow cursor to move where there is no text in visual block mode
   vim.opt.cmdheight = 0         -- Hide the command line when it is not active
+  vim.opt.diffopt = "internal,filler,closeoff,indent-heuristic,linematch:60,algorithm:histogram"
 
   -- Set filetype to `bigfile` for files larger than 1MB
   -- Only vim syntax will be enabled (with the correct filetype)

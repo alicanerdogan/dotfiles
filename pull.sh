@@ -11,6 +11,7 @@ elif [[ $os == "Linux" ]]; then
   cp ~/.alacritty.yml .alacritty.linux.yml 
 fi
 
+cp ~/.config/fish/config.fish .config/fish/config.fish
 cp ~/.zshrc .zshrc 
 cp -r ~/.config/nvim/** .config/nvim
 cp -r ~/.config/ghostty/** .config/ghostty

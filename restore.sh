@@ -3,6 +3,7 @@
 os="$(uname)"
 
 mv -f ~/.shell.sh.bak  ~/.shell.sh 
+mv -f ~/.config/fish/config.fish.bak ~/.config/fish/config.fish
 if [[ $os == "Darwin" ]]; then
   cp ~/.wezterm.lua.bak ~/.wezterm.lua
   mv -f ~/.alacritty.toml.bak  ~/.alacritty.toml

@@ -638,7 +638,7 @@ local function set_up_nvim_only_plugins(plugins)
         -- Change the default shell. Can be a string or a function returning a string
         shell = function()
           if not did_editor_open_with_directory() then
-            return 'zsh'
+            return 'fish'
           end
 
           local cwd = vim.fn.getcwd()
@@ -1181,6 +1181,7 @@ local function set_up_nvim_only_plugins(plugins)
         ["shell"] = true,
         ["bash"] = true,
         ["zsh"] = true,
+        ["fish"] = true,
         ["sh"] = true,
         ["sql"] = true,
         ["md"] = true,

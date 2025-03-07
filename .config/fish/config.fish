@@ -60,55 +60,71 @@ function gswx --description "Interactive branch picker"
   end
 end
 
-function set_git_abbreviations
-  abbr -a -g g          git
-  abbr -a -g ga         git add
-  abbr -a -g gaa        git add --all
-  abbr -a -g gbd        git branch -d
-  abbr -a -g gbD        git branch -D
-  abbr -a -g gc         git commit -v
-  abbr -a -g gcv        git commit -v --no-verify
-  abbr -a -g gcm        git commit -m
-  abbr -a -g gclean     git clean -di
-  abbr -a -g gclean!    git clean -dfx
-  abbr -a -g gd         git diff
-  abbr -a -g gfo        git fetch origin
-  abbr -a -g gll        git pull origin
-  abbr -a -g glo        git log --oneline --decorate --color
-  abbr -a -g gloo       "git log --pretty=format:'%C(yellow)%h %Cred%ad %Cblue%an%Cgreen%d %Creset%s' --date=short"
-  abbr -a -g grba       git rebase --abort
-  abbr -a -g grbc       git rebase --continue
-  abbr -a -g grbi       git rebase --interactive
-  abbr -a -g grbs       git rebase --skip
-  abbr -a -g ggu        git pull --rebase origin \(git_current_branch\)
-  abbr -a -g grhh       git reset --hard
-  abbr -a -g gss        git status -s
-  abbr -a -g gst        git status
-  abbr -a -g gsta       git stash
-  abbr -a -g gstd       git stash drop
-  abbr -a -g gstl       git stash list
-  abbr -a -g gstp       git stash pop
-  abbr -a -g gsw        git switch
-  abbr -a -g gswc       git switch --create
-
-  abbr -a -g gcom       git checkout \(git_main_branch\)
-  abbr -a -g gpom       git pull origin \(git_main_branch\)
-  abbr -a -g gpush      git push origin \(git_current_branch\)
-  abbr -a -g gpushf     git push --force-with-lease origin \(git_current_branch\)
-  abbr -a -g gfix       "git commit -m 'Fix' && git rebase -i HEAD~2"
-
-  # gh cli abbreviations
-  abbr -a -g ghprd      gh pr create -d
-  abbr -a -g ghpr       gh pr view --web
+function ggu --description "Pull from the current branch in origin"
+  git pull --rebase origin $(git_current_branch)
 end
 
-function set_abbreviations
-  abbr -a -g rm        safe-rm
-  abbr -a -g cls       clear
-  abbr -a -g p         pnpm
-  abbr -a -g vim       nvim
+function gpom --description "Pull from the main branch in origin"
+  git pull origin $(git_main_branch)
+end
 
-  set_git_abbreviations
+function gpush --description "Pushes to the current branch in origin"
+  git push origin $(git_current_branch)
+end
+
+function gpushf --description "Force pushes to the current branch in origin"
+  git push --force-with-lease origin $(git_current_branch)
+end
+
+function gswm --description "Switches to main branch"
+  git switch $(git_main_branch)
+end
+
+function set_git_aliases
+  alias g="git"
+  alias ga="git add"
+  alias gaa="git add --all"
+  alias gbd="git branch -d"
+  alias gbD="git branch -D"
+  alias gc="git commit -v"
+  alias gcv="git commit -v --no-verify"
+  alias gcm="git commit -m"
+  alias gclean="git clean -di"
+  alias gclean!="git clean -dfx"
+  alias gd="git diff"
+  alias gfo="git fetch origin"
+  alias gl="git pull"
+  alias gll="git pull origin"
+  alias glo="git log --oneline --decorate --color"
+  alias gloo="git log --pretty=format:'%C(yellow)%h %Cred%ad %Cblue%an%Cgreen%d %Creset%s' --date=short"
+  alias grba="git rebase --abort"
+  alias grbc="git rebase --continue"
+  alias grbi="git rebase --interactive"
+  alias grbs="git rebase --skip"
+  alias grhh="git reset --hard"
+  alias gss="git status -s"
+  alias gst="git status"
+  alias gsta="git stash"
+  alias gstd="git stash drop"
+  alias gstl="git stash list"
+  alias gstp="git stash pop"
+  alias gsw="git switch"
+  alias gswc="git switch --create"
+
+  alias gfix="git commit -m 'Fix' && git rebase -i HEAD~2"
+
+  # gh cli 
+  alias ghprd="gh pr create -d"
+  alias ghpr="gh pr view --web"
+end
+
+function set_aliases
+  alias rm="safe-rm"
+  alias cls="clear"
+  alias p="pnpm"
+  alias vim="nvim"
+
+  set_git_aliases
 end
 
 # Environment variables
@@ -158,7 +174,7 @@ load_user_config
 if status is-interactive
   fish_vi_key_bindings
   set_keybindings
-  set_abbreviations
+  set_aliases
 
   set_fzf
   set_jump

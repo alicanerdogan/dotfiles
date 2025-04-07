@@ -13,7 +13,7 @@ function notify --description "Native MacOS Notification"
 end
 
 function optimize --description "Optimizes videos and convert them to HD mp4 videos"
-  set filepath $1
+  set filepath $argv[1]
   set filename $(basename "$filepath")
   set filename (string replace -r '\.[^.]*$' '' $filename)
   ffmpeg -i $filepath -c:v libx264 -vf scale=-2:720 -crf 28 -preset veryslow -an "$filename.mp4"
@@ -24,7 +24,7 @@ end
 
 # Git helpers
 function git_main_branch --description "Outputs main git branch"
-  git remote show origin | grep "HEAD branch" | cut -d' ' -f5
+  git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'
 end
 
 function ghco --description "Interactive branch picker for PRs"
@@ -54,7 +54,7 @@ end
 function gswx --description "Interactive branch picker"
   set branch $1
   if [ -z "$branch" ]
-    git switch $(git branch --sort=-committerdate | grep -v "\*" | fzf)
+    git switch $(git branch --sort=-committerdate | grep -v "\*" | sed 's/^[[:space:]]*//' | fzf)
   else
     git switch $branch
   end
@@ -102,6 +102,7 @@ function set_git_aliases
   alias grbi="git rebase --interactive"
   alias grbs="git rebase --skip"
   alias grhh="git reset --hard"
+  alias grhs="git reset --soft"
   alias gss="git status -s"
   alias gst="git status"
   alias gsta="git stash"

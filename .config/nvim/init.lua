@@ -166,28 +166,64 @@ local function set_up_global_config()
   vim.opt.cmdheight = 0         -- Hide the command line when it is not active
   vim.opt.diffopt = "internal,filler,closeoff,indent-heuristic,linematch:60,algorithm:histogram"
 
-  -- Set filetype to `bigfile` for files larger than 1MB
-  -- Only vim syntax will be enabled (with the correct filetype)
-  -- LSP, treestitter and the other ft plugins will be disabled.
-  vim.g.bigfile_size = 1024 * 1024 * 1
-  vim.filetype.add({
-    pattern = {
-      [".*"] = {
-        function(path, buf)
-          return vim.bo[buf].filetype ~= "bigfile" and path and vim.fn.getfsize(path) > vim.g.bigfile_size and "bigfile" or
-              nil
-        end,
-      },
-    },
-  })
-  vim.api.nvim_create_autocmd({ "FileType", }, {
-    group = vim.api.nvim_create_augroup("bigfile", { clear = true }),
-    pattern = "bigfile",
-    callback = function(ev)
-      vim.b.minianimate_disable = true
-      vim.schedule(function()
-        vim.bo[ev.buf].syntax = vim.filetype.match({ buf = ev.buf }) or ""
-      end)
+  -- -- Folding settings
+  vim.o.foldenable = true
+  vim.o.foldlevel = 99
+  vim.o.foldmethod = "expr"
+  -- Default to treesitter folding
+  vim.o.foldexpr = "v:lua.vim.treesitter.foldexpr()"
+  vim.opt.foldcolumn = '0'
+  local function fold_virt_text(result, s, lnum, coloff)
+    if not coloff then
+      coloff = 0
+    end
+    local text = ""
+    local hl
+    for i = 1, #s do
+      local char = s:sub(i, i)
+      local hls = vim.treesitter.get_captures_at_pos(0, lnum, coloff + i - 1)
+      local _hl = hls[#hls]
+      if _hl then
+        local new_hl = "@" .. _hl.capture
+        if new_hl ~= hl then
+          table.insert(result, { text, hl })
+          text = ""
+          hl = nil
+        end
+        text = text .. char
+        hl = new_hl
+      else
+        text = text .. char
+      end
+    end
+    table.insert(result, { text, hl })
+  end
+
+  function _G.custom_foldtext()
+    local start = vim.fn.getline(vim.v.foldstart):gsub("\t", string.rep(" ", vim.o.tabstop))
+    local end_str = vim.fn.getline(vim.v.foldend)
+    local end_ = vim.trim(end_str)
+    local result = {}
+    fold_virt_text(result, start, vim.v.foldstart - 1)
+    table.insert(result, { " ... ", "Delimiter" })
+    fold_virt_text(result, end_, vim.v.foldend - 1, #(end_str:match("^(%s+)") or ""))
+    return result
+  end
+
+  vim.opt.foldtext = "v:lua.custom_foldtext()"
+  vim.o.statuscolumn =
+  '%=%l%s%{foldlevel(v:lnum) > foldlevel(v:lnum - 1) ? (foldclosed(v:lnum) == -1 ? " " : "⏵") : " " }'
+
+  -- Prefer LSP folding if client supports it
+  vim.api.nvim_create_autocmd('LspAttach', {
+    callback = function(args)
+      local client = vim.lsp.get_client_by_id(args.data.client_id)
+      if client:supports_method('textDocument/foldingRange') then
+        local win = vim.api.nvim_get_current_win()
+        if vim.wo[win].foldenable then
+          vim.wo[win][0].foldexpr = 'v:lua.vim.lsp.foldexpr()'
+        end
+      end
     end,
   })
 
@@ -214,6 +250,9 @@ local function set_up_global_config()
     "ts=typescript"
   }
 
+  vim.diagnostic.config({
+    virtual_lines = { current_line = true },
+  })
   vim.g.mapleader = ' '
 end
 
@@ -818,7 +857,7 @@ local function set_up_nvim_only_plugins(plugins)
 
   table.insert(plugins, {
     'saghen/blink.cmp',
-    version = 'v0.*',
+    version = '1.*',
     dependencies = {
       { 'L3MON4D3/LuaSnip', version = 'v2.*' },
     },
@@ -864,7 +903,7 @@ local function set_up_nvim_only_plugins(plugins)
       -- Autocompletion
       {
         'saghen/blink.cmp',
-        version = 'v0.*',
+        version = '1.*',
       },
       {
         'L3MON4D3/LuaSnip',
@@ -1187,6 +1226,7 @@ local function set_up_nvim_only_plugins(plugins)
         ["md"] = true,
         ["json"] = true,
         ["markdown"] = true,
+        ["swift"] = true,
       }
       vim.api.nvim_set_keymap("i", "<C-L>", 'copilot#Accept("<CR>")', { silent = true, expr = true })
       vim.api.nvim_set_keymap("i", "<C-J>", 'copilot#Previous()', { silent = true, expr = true })

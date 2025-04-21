@@ -493,22 +493,12 @@ local function set_up_nvim_only_plugins(plugins)
         },
         grep = {
           formatter = "path.filename_first",
-          actions = {
-            ["ctrl-q"] = {
-              -- Send results to the quickfix list
-              fn = require("fzf-lua").actions.file_edit_or_qf,
-              prefix = "select-all+",
-            },
-            ["ctrl-c"] = {
-              fn = function()
-                -- TODO: clear search query
-              end,
-            },
-          },
+          hidden = true,
         },
         glob = {
           formatter = "path.filename_first",
           rg_glob = true,
+          hidden = true,
           -- first returned string is the new search query
           -- second returned string are (optional) additional rg flags
           -- @return string, string?
@@ -517,7 +507,7 @@ local function set_up_nvim_only_plugins(plugins)
             -- If no separator is detected wil return the original query
             return (regex or query), flags
           end,
-        }
+        },
       })
       -- searching within git tracked files
       vim.keymap.set('n', '<C-p>', function() require('fzf-lua').files({ cwd_prompt = false, previewer = false }) end,

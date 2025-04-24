@@ -1,5 +1,6 @@
 tap "homebrew/bundle"
 tap "oven-sh/bun"
+brew "ast-grep"
 brew "bat"
 brew "cmake"
 brew "curl"

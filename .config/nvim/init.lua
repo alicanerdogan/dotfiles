@@ -150,6 +150,10 @@ local resize_windows = function()
   vim.cmd("tabdo wincmd =")
   vim.api.nvim_set_current_tabpage(current_tab)
 end
+
+local git_main_branch = function()
+  return vim.fn.system("git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'")
+end
 -- Utility functions end
 
 local function set_up_global_config()
@@ -490,10 +494,24 @@ local function set_up_nvim_only_plugins(plugins)
       require("fzf-lua").setup({
         files = {
           formatter = "path.filename_first",
+          actions = {
+            ["ctrl-q"] = {
+              -- Send results to the quickfix list
+              fn = require("fzf-lua").actions.file_edit_or_qf,
+              prefix = "select-all+",
+            },
+          },
         },
         grep = {
           formatter = "path.filename_first",
           hidden = true,
+          actions = {
+            ["ctrl-q"] = {
+              -- Send results to the quickfix list
+              fn = require("fzf-lua").actions.file_edit_or_qf,
+              prefix = "select-all+",
+            },
+          },
         },
         glob = {
           formatter = "path.filename_first",
@@ -507,6 +525,13 @@ local function set_up_nvim_only_plugins(plugins)
             -- If no separator is detected wil return the original query
             return (regex or query), flags
           end,
+          actions = {
+            ["ctrl-q"] = {
+              -- Send results to the quickfix list
+              fn = require("fzf-lua").actions.file_edit_or_qf,
+              prefix = "select-all+",
+            },
+          },
         },
       })
       -- searching within git tracked files
@@ -515,6 +540,13 @@ local function set_up_nvim_only_plugins(plugins)
       -- searching with git tracked files
       vim.keymap.set('n', '<leader>ff', function()
           require('fzf-lua').live_grep_glob({
+            actions = {
+              ["ctrl-q"] = {
+                -- Send results to the quickfix list
+                fn = require("fzf-lua").actions.file_edit_or_qf,
+                prefix = "select-all+",
+              },
+            },
             no_esc = true,
             search = " -- !*.test.html !*.test.ts !*.spec.ts !*.md !*.graphql !*.json !*.lock !*.mock",
             winopts = {
@@ -546,7 +578,19 @@ local function set_up_nvim_only_plugins(plugins)
         function() require('fzf-lua').oldfiles({ cwd = get_root_directory(), previewer = false }) end,
         { noremap = true, desc = "Search in recent files" })
       -- searching within modified files
-      vim.keymap.set('n', '<leader>fm', function() require('fzf-lua').git_status() end,
+      vim.keymap.set('n', '<leader>fm',
+        function()
+          require('fzf-lua').fzf_exec("git diff --name-only origin/" .. git_main_branch(), {
+            actions = {
+              ['default'] = require 'fzf-lua'.actions.file_edit,
+              ['ctrl-q'] = {
+                -- Send results to the quickfix list
+                fn = require("fzf-lua").actions.file_edit_or_qf,
+                prefix = "select-all+",
+              },
+            },
+          })
+        end,
         { noremap = true, desc = "Search in modified files" })
     end,
   })
@@ -1288,10 +1332,7 @@ local function set_up_nvim_only_plugins(plugins)
           },
           git_main_diff = {
             resolve = function()
-              local main_branch = vim.fn.system('git symbolic-ref --short HEAD | sed \'s/refs\\/remotes\\/origin\\///\'')
-              main_branch = main_branch:gsub("^%s*(.-)%s*$", "%1")
-
-              local cmd = 'git diff --no-ext-diff origin/' .. main_branch .. '..HEAD'
+              local cmd = 'git diff --no-ext-diff origin/' .. git_main_branch() .. '..HEAD'
               local diff = table.concat(vim.fn.systemlist(cmd), "\n")
 
               return {

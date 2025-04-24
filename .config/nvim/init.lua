@@ -580,7 +580,22 @@ local function set_up_nvim_only_plugins(plugins)
       -- searching within modified files
       vim.keymap.set('n', '<leader>fm',
         function()
-          require('fzf-lua').fzf_exec("git diff --name-only origin/" .. git_main_branch(), {
+          local fzf_lua = require('fzf-lua')
+          local actions = vim.deepcopy(fzf_lua.defaults.actions.files)
+          actions['ctrl-q'] = {
+            -- Send results to the quickfix list
+            fn = require("fzf-lua").actions.file_edit_or_qf,
+          }
+          fzf_lua.fzf_exec("git diff --name-only origin/" .. git_main_branch(), {
+            actions = actions,
+          })
+        end,
+        { noremap = true, desc = "Search in modified files" })
+
+      vim.keymap.set('n', '<leader>ft',
+        function()
+          require('fzf-lua').fzf_live("sg --context 0 --heading never --pattern <query> 2>/dev/null", {
+            exec_empty_query = false,
             actions = {
               ['default'] = require 'fzf-lua'.actions.file_edit,
               ['ctrl-q'] = {
@@ -591,7 +606,7 @@ local function set_up_nvim_only_plugins(plugins)
             },
           })
         end,
-        { noremap = true, desc = "Search in modified files" })
+        { noremap = true, desc = "Search with ast-grep" })
     end,
   })
 

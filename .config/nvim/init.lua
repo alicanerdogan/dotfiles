@@ -1,12 +1,3 @@
-local theme = 'dark'
-local function set_theme()
-  if theme == 'dark' then
-    vim.cmd('colorscheme terafox')
-  else
-    vim.cmd('colorscheme dayfox')
-  end
-end
-
 -- Utility functions
 local user_module = nil
 local function get_user_module()
@@ -358,19 +349,6 @@ local function set_up_nvim_only_config()
       end
     end,
     { nargs = 0 })
-
-  -- Switch theme to dark or light (pass argument to switch to a specific theme)
-  vim.api.nvim_create_user_command('SwitchTheme',
-    function(opts)
-      local new_theme = opts.args
-      if new_theme ~= "dark" and new_theme ~= "light" then
-        print("Invalid theme. Please use 'dark' or 'light'")
-        return
-      end
-      theme = new_theme
-      set_theme()
-    end,
-    { nargs = 1 })
 end
 
 local function set_up_vscode_config()
@@ -492,6 +470,7 @@ local function set_up_nvim_only_plugins(plugins)
     },
     config = function()
       require("fzf-lua").setup({
+        file_ignore_patterns = { "^.git/" },
         files = {
           formatter = "path.filename_first",
           actions = {
@@ -611,10 +590,20 @@ local function set_up_nvim_only_plugins(plugins)
   })
 
   table.insert(plugins, {
-    "EdenEast/nightfox.nvim",
+    "webhooked/kanso.nvim",
     lazy = false,
     priority = 1000,
-    config = set_theme,
+    config = function()
+      require('kanso').setup({
+        background = {  -- map the value of 'background' option to a theme
+          dark = "zen", -- "ink" | "zen" | "pearl"
+          light = "pearl"
+        },
+      })
+
+      -- setup must be called before loading
+      vim.cmd("colorscheme kanso")
+    end,
   })
 
   table.insert(plugins, {

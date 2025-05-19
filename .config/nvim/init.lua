@@ -463,33 +463,130 @@ local function set_up_nvim_only_plugins(plugins)
       })
     end,
   })
+
   table.insert(plugins, {
     "ibhagwan/fzf-lua",
     dependencies = {
       "nvim-tree/nvim-web-devicons",
     },
-    config = function()
-      require("fzf-lua").setup({
+    opts = function()
+      local fzf = require("fzf-lua")
+      local config = fzf.config
+      local actions = fzf.actions
+
+      -- Quickfix
+      config.defaults.keymap.fzf["ctrl-q"] = "select-all+accept"
+      config.defaults.keymap.fzf["ctrl-u"] = "half-page-up"
+      config.defaults.keymap.fzf["ctrl-d"] = "half-page-down"
+      config.defaults.keymap.fzf["ctrl-x"] = "jump"
+      config.defaults.keymap.fzf["ctrl-f"] = "preview-page-down"
+      config.defaults.keymap.fzf["ctrl-b"] = "preview-page-up"
+      config.defaults.keymap.builtin["<c-f>"] = "preview-page-down"
+      config.defaults.keymap.builtin["<c-b>"] = "preview-page-up"
+
+      local img_previewer ---@type string[]?
+      for _, v in ipairs({
+        { cmd = "ueberzug", args = {} },
+        { cmd = "chafa",    args = { "{file}", "--format=symbols" } },
+        { cmd = "viu",      args = { "-b" } },
+      }) do
+        if vim.fn.executable(v.cmd) == 1 then
+          img_previewer = vim.list_extend({ v.cmd }, v.args)
+          break
+        end
+      end
+
+      local get_clients = function(opts)
+        local ret = {}
+        if vim.lsp.get_clients then
+          ret = vim.lsp.get_clients(opts)
+        else
+          ret = vim.lsp.get_active_clients(opts)
+          if opts and opts.method then
+            ret = vim.tbl_filter(function(client)
+              return client.supports_method(opts.method, { bufnr = opts.bufnr })
+            end, ret)
+          end
+        end
+        return opts and opts.filter and vim.tbl_filter(opts.filter, ret) or ret
+      end
+
+      return {
+        "default-title",
         file_ignore_patterns = { "^.git/" },
+        fzf_colors = true,
+        fzf_opts = {
+          ["--no-scrollbar"] = true,
+        },
+        defaults = {
+          -- formatter = "path.filename_first",
+          formatter = "path.dirname_first",
+        },
+        previewers = {
+          builtin = {
+            extensions = {
+              ["png"] = img_previewer,
+              ["jpg"] = img_previewer,
+              ["jpeg"] = img_previewer,
+              ["gif"] = img_previewer,
+              ["webp"] = img_previewer,
+            },
+            ueberzug_scaler = "fit_contain",
+          },
+        },
+        ui_select = function(fzf_opts, items)
+          return vim.tbl_deep_extend("force", fzf_opts, {
+            prompt = " ",
+            winopts = {
+              title = " " .. vim.trim((fzf_opts.prompt or "Select"):gsub("%s*:%s*$", "")) .. " ",
+              title_pos = "center",
+            },
+          }, fzf_opts.kind == "codeaction" and {
+            winopts = {
+              layout = "vertical",
+              -- height is number of items minus 15 lines for the preview, with a max of 80% screen height
+              height = math.floor(math.min(vim.o.lines * 0.8 - 16, #items + 2) + 0.5) + 16,
+              width = 0.5,
+              preview = not vim.tbl_isempty(get_clients({ bufnr = 0, name = "vtsls" })) and {
+                layout = "vertical",
+                vertical = "down:15,border-top",
+                hidden = "hidden",
+              } or {
+                layout = "vertical",
+                vertical = "down:15,border-top",
+              },
+            },
+          } or {
+            winopts = {
+              width = 0.5,
+              -- height is number of items, with a max of 80% screen height
+              height = math.floor(math.min(vim.o.lines * 0.8, #items + 2) + 0.5),
+            },
+          })
+        end,
+        winopts = {
+          width = 0.8,
+          height = 0.8,
+          row = 0.5,
+          col = 0.5,
+          preview = {
+            scrollchars = { "┃", "" },
+          },
+        },
         files = {
           formatter = "path.filename_first",
+          cwd_prompt = false,
           actions = {
-            ["ctrl-q"] = {
-              -- Send results to the quickfix list
-              fn = require("fzf-lua").actions.file_edit_or_qf,
-              prefix = "select-all+",
-            },
+            ["alt-i"] = { actions.toggle_ignore },
+            ["alt-h"] = { actions.toggle_hidden },
           },
         },
         grep = {
           formatter = "path.filename_first",
           hidden = true,
           actions = {
-            ["ctrl-q"] = {
-              -- Send results to the quickfix list
-              fn = require("fzf-lua").actions.file_edit_or_qf,
-              prefix = "select-all+",
-            },
+            ["alt-i"] = { actions.toggle_ignore },
+            ["alt-h"] = { actions.toggle_hidden },
           },
         },
         glob = {
@@ -504,28 +601,61 @@ local function set_up_nvim_only_plugins(plugins)
             -- If no separator is detected wil return the original query
             return (regex or query), flags
           end,
-          actions = {
-            ["ctrl-q"] = {
-              -- Send results to the quickfix list
-              fn = require("fzf-lua").actions.file_edit_or_qf,
-              prefix = "select-all+",
-            },
+        },
+        lsp = {
+          symbols = {
+            symbol_hl = function(s)
+              return "TroubleIcon" .. s
+            end,
+            symbol_fmt = function(s)
+              return s:lower() .. "\t"
+            end,
+            child_prefix = false,
+          },
+          code_actions = {
+            previewer = vim.fn.executable("delta") == 1 and "codeaction_native" or nil,
           },
         },
+      }
+    end,
+    init = function()
+      vim.api.nvim_create_autocmd("User", {
+        pattern = "VeryLazy",
+        callback = function()
+          vim.ui.select = function(...)
+            require("lazy").load({ plugins = { "fzf-lua" } })
+            local plugin = require("lazy.core.config").spec.plugins["fzf-lua"]
+            local opts = require("lazy.core.plugin").values(plugin, "opts", false)
+            require("fzf-lua").register_ui_select(opts.ui_select or nil)
+            return vim.ui.select(...)
+          end
+        end,
       })
+    end,
+    config = function(_, opts)
+      if opts[1] == "default-title" then
+        -- use the same prompt for all pickers for profile `default-title` and
+        -- profiles that use `default-title` as base profile
+        local function fix(t)
+          t.prompt = t.prompt ~= nil and " " or nil
+          for _, v in pairs(t) do
+            if type(v) == "table" then
+              fix(v)
+            end
+          end
+          return t
+        end
+        opts = vim.tbl_deep_extend("force", fix(require("fzf-lua.profiles.default-title")), opts)
+        opts[1] = nil
+      end
+      require("fzf-lua").setup(opts)
+
       -- searching within git tracked files
       vim.keymap.set('n', '<C-p>', function() require('fzf-lua').files({ cwd_prompt = false, previewer = false }) end,
         { noremap = true, desc = "Find files in the current directory" })
       -- searching with git tracked files
       vim.keymap.set('n', '<leader>ff', function()
           require('fzf-lua').live_grep_glob({
-            actions = {
-              ["ctrl-q"] = {
-                -- Send results to the quickfix list
-                fn = require("fzf-lua").actions.file_edit_or_qf,
-                prefix = "select-all+",
-              },
-            },
             no_esc = true,
             search = " -- !*.test.html !*.test.ts !*.spec.ts !*.md !*.graphql !*.json !*.lock !*.mock",
             winopts = {
@@ -562,27 +692,26 @@ local function set_up_nvim_only_plugins(plugins)
           local fzf_lua = require('fzf-lua')
           local actions = vim.deepcopy(fzf_lua.defaults.actions.files)
           actions['ctrl-q'] = {
-            -- Send results to the quickfix list
-            fn = require("fzf-lua").actions.file_edit_or_qf,
+            prefix = "select-all+",
+            fn = fzf_lua.actions.file_edit_or_qf,
           }
           fzf_lua.fzf_exec("git diff --name-only origin/" .. git_main_branch(), {
             actions = actions,
           })
         end,
         { noremap = true, desc = "Search in modified files" })
-
+      -- searching with ast-grep
       vim.keymap.set('n', '<leader>ft',
         function()
+          local fzf_lua = require('fzf-lua')
+          local actions = vim.deepcopy(fzf_lua.defaults.actions.files)
+          actions['ctrl-q'] = {
+            prefix = "select-all+",
+            fn = fzf_lua.actions.file_edit_or_qf,
+          }
           require('fzf-lua').fzf_live("sg --context 0 --heading never --pattern <query> 2>/dev/null", {
             exec_empty_query = false,
-            actions = {
-              ['default'] = require 'fzf-lua'.actions.file_edit,
-              ['ctrl-q'] = {
-                -- Send results to the quickfix list
-                fn = require("fzf-lua").actions.file_edit_or_qf,
-                prefix = "select-all+",
-              },
-            },
+            actions = actions,
           })
         end,
         { noremap = true, desc = "Search with ast-grep" })

@@ -137,6 +137,13 @@ function set_env_vars
 
   set -x PATH /opt/homebrew/bin $PATH
   set -x PATH /opt/homebrew/opt/openjdk/bin $PATH
+
+  # pnpm
+  set -gx PNPM_HOME "~/Library/pnpm"
+  if not string match -q -- $PNPM_HOME $PATH
+    set -gx PATH "$PNPM_HOME" $PATH
+  end
+  # pnpm end
 end
 
 function set_keybindings

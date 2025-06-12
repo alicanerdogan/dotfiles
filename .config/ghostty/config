@@ -66,3 +66,4 @@ keybind = ctrl+f>ctrl+r=reload_config
 # Copy mode
 keybind = ctrl+f>/=write_screen_file:paste
 
+keybind = shift+enter=text:\n

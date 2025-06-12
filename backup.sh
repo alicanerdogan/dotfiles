@@ -15,5 +15,6 @@ fi
 cp ~/.zshrc ~/.zshrc.bak 
 cp -R ~/.config/nvim ~/.config/nvim.bak 
 cp -R ~/.config/ghostty ~/.config/ghostty.bak 
+cp -R ~/.config/aerospace ~/.config/aerospace.bak 
 cp ~/.tmux.conf ~/.tmux.conf.bak 
 

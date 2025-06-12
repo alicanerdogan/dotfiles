@@ -80,6 +80,10 @@ function gswm --description "Switches to main branch"
   git switch $(git_main_branch)
 end
 
+function jw --description "Jump to a window using aerospace"
+  aerospace list-windows --all | fzf --bind 'enter:execute(bash -c "aerospace focus --window-id={2}")+abort'
+end
+
 function set_git_aliases
   alias g="git"
   alias ga="git add"

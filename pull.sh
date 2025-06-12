@@ -15,5 +15,6 @@ cp ~/.config/fish/config.fish .config/fish/config.fish
 cp ~/.zshrc .zshrc 
 cp -r ~/.config/nvim/** .config/nvim
 cp -r ~/.config/ghostty/** .config/ghostty
+cp -r ~/.config/aerospace/** .config/aerospace
 cp ~/.tmux.conf .tmux.conf 
 

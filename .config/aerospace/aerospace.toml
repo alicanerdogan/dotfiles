@@ -1,0 +1,129 @@
+start-at-login = false
+
+# Normalizations. See: https://nikitabobko.github.io/AeroSpace/guide#normalization
+enable-normalization-flatten-containers = true
+enable-normalization-opposite-orientation-for-nested-containers = true
+
+# The 'accordion-padding' specifies the size of accordion padding
+accordion-padding = 30
+
+# Possible values: tiles|accordion
+default-root-container-layout = 'tiles'
+
+# Possible values: horizontal|vertical|auto
+default-root-container-orientation = 'auto'
+
+# Mouse follows focus when focused monitor changes
+on-focused-monitor-changed = ['move-mouse monitor-lazy-center']
+
+# You can effectively turn off macOS "Hide application" (cmd-h) feature by toggling this flag
+automatically-unhide-macos-hidden-apps = false
+
+# Possible values: (qwerty|dvorak|colemak)
+[key-mapping]
+    preset = 'qwerty'
+
+# Gaps between windows (inner-*) and between monitor edges (outer-*).
+[gaps]
+    inner.horizontal = 0
+    inner.vertical =   0
+    outer.left =       0
+    outer.bottom =     0
+    outer.top =        0
+    outer.right =      0
+
+# 'main' binding mode declaration
+# See: https://nikitabobko.github.io/AeroSpace/guide#binding-modes
+# 'main' binding mode must be always presented
+# Fallback value (if you omit the key): mode.main.binding = {}
+[mode.main.binding]
+
+    # All possible keys:
+    # - Letters.        a, b, c, ..., z
+    # - Numbers.        0, 1, 2, ..., 9
+    # - Keypad numbers. keypad0, keypad1, keypad2, ..., keypad9
+    # - F-keys.         f1, f2, ..., f20
+    # - Special keys.   minus, equal, period, comma, slash, backslash, quote, semicolon,
+    #                   backtick, leftSquareBracket, rightSquareBracket, space, enter, esc,
+    #                   backspace, tab, pageUp, pageDown, home, end, forwardDelete,
+    #                   sectionSign (ISO keyboards only, european keyboards only)
+    # - Keypad special. keypadClear, keypadDecimalMark, keypadDivide, keypadEnter, keypadEqual,
+    #                   keypadMinus, keypadMultiply, keypadPlus
+    # - Arrows.         left, down, up, right
+
+    # All possible modifiers: cmd, alt, ctrl, shift
+
+    # All possible commands: https://nikitabobko.github.io/AeroSpace/commands
+
+    # See: https://nikitabobko.github.io/AeroSpace/commands#exec-and-forget
+    # You can uncomment the following lines to open up terminal with alt + enter shortcut
+    # (like in i3)
+    # alt-enter = '''exec-and-forget osascript -e '
+    # tell application "Terminal"
+    #     do script
+    #     activate
+    # end tell'
+    # '''
+    # LOWER: meh = shift-ctrl-alt-
+    # RAISE: hyp = shift-ctrl-alt-cmd- 
+
+    # See: https://nikitabobko.github.io/AeroSpace/commands#layout
+    shift-ctrl-alt-semicolon = 'layout tiles accordion'
+    shift-ctrl-alt-p = 'layout tiles horizontal vertical'
+    shift-ctrl-alt-f = 'fullscreen'
+    shift-ctrl-alt-cmd-r = ['flatten-workspace-tree'] # reset layout
+
+    # See: https://nikitabobko.github.io/AeroSpace/commands#focus
+    shift-ctrl-alt-h = 'focus left'
+    shift-ctrl-alt-j = 'focus down'
+    shift-ctrl-alt-k = 'focus up'
+    shift-ctrl-alt-l = 'focus right'
+
+    # See: https://nikitabobko.github.io/AeroSpace/commands#move
+    shift-ctrl-alt-cmd-h = 'move left'
+    shift-ctrl-alt-cmd-j = 'move down'
+    shift-ctrl-alt-cmd-k = 'move up'
+    shift-ctrl-alt-cmd-l = 'move right'
+    shift-ctrl-alt-cmd-y = ['join-with left']
+    shift-ctrl-alt-cmd-u = ['join-with down']
+    shift-ctrl-alt-cmd-i = ['join-with up']
+    shift-ctrl-alt-cmd-o = ['join-with right']
+
+    # See: https://nikitabobko.github.io/AeroSpace/commands#resize
+    shift-ctrl-alt-cmd-s = 'resize smart -50'
+    shift-ctrl-alt-cmd-g = 'resize smart +50'
+
+    # See: https://nikitabobko.github.io/AeroSpace/commands#workspace
+    shift-ctrl-alt-1 = 'workspace 1'
+    shift-ctrl-alt-2 = 'workspace 2'
+    shift-ctrl-alt-3 = 'workspace 3'
+    shift-ctrl-alt-4 = 'workspace 4'
+    shift-ctrl-alt-5 = 'workspace 5'
+    shift-ctrl-alt-6 = 'workspace 6'
+    shift-ctrl-alt-7 = 'workspace 7'
+    shift-ctrl-alt-8 = 'workspace 8'
+    shift-ctrl-alt-9 = 'workspace 9'
+    
+    # See: https://nikitabobko.github.io/AeroSpace/commands#workspace-back-and-forth
+    shift-ctrl-alt-w = 'focus-back-and-forth'
+
+    # See: https://nikitabobko.github.io/AeroSpace/commands#move-node-to-workspace
+    shift-ctrl-alt-cmd-1 = 'move-node-to-workspace 1'
+    shift-ctrl-alt-cmd-2 = 'move-node-to-workspace 2'
+    shift-ctrl-alt-cmd-3 = 'move-node-to-workspace 3'
+    shift-ctrl-alt-cmd-4 = 'move-node-to-workspace 4'
+    shift-ctrl-alt-cmd-5 = 'move-node-to-workspace 5'
+    shift-ctrl-alt-cmd-6 = 'move-node-to-workspace 6'
+    shift-ctrl-alt-cmd-7 = 'move-node-to-workspace 7'
+    shift-ctrl-alt-cmd-8 = 'move-node-to-workspace 8'
+    shift-ctrl-alt-cmd-9 = 'move-node-to-workspace 9'
+
+    # See: https://nikitabobko.github.io/AeroSpace/commands#workspace-back-and-forth
+    shift-ctrl-alt-t = 'workspace-back-and-forth'
+
+    # Reload config
+    shift-ctrl-alt-cmd-enter = ['reload-config']
+
+[[on-window-detected]]
+    if.app-id="com.mitchellh.ghostty"
+    run= ["layout floating"]

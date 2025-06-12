@@ -48,3 +48,5 @@ brew "yazi"
 
 tap "homebrew/cask-fonts"
 brew "font-jetbrains-mono-nerd-font"
+
+tap "nikitabobko/tap/aerospace"

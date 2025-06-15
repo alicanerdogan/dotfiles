@@ -657,7 +657,7 @@ local function set_up_nvim_only_plugins(plugins)
       vim.keymap.set('n', '<leader>ff', function()
           require('fzf-lua').live_grep_glob({
             no_esc = true,
-            search = " -- !*.test.html !*.test.ts !*.spec.ts !*.md !*.graphql !*.json !*.lock !*.mock",
+            search = " -- !*.test.html !*.test.ts !*.spec.ts !*.md !*.graphql !*.json !*.lock !*.mock !*.xlf",
             winopts = {
               preview = {
                 delay = 500,
@@ -1085,7 +1085,7 @@ local function set_up_nvim_only_plugins(plugins)
       require('mason').setup({})
       ---@diagnostic disable-next-line: missing-fields
       require('mason-lspconfig').setup({
-        ensure_installed = { 'lua_ls', 'ts_ls', 'eslint' },
+        ensure_installed = { 'lua_ls', 'ts_ls', 'jsonls', 'eslint', 'fish_lsp', },
         handlers = {
           function(server_name)
             local capabilities = require('blink.cmp').get_lsp_capabilities()
@@ -1151,22 +1151,32 @@ local function set_up_nvim_only_plugins(plugins)
       local format = require("formatter")
 
       local formatter = nil
+      local html_formatter = nil
+
+      local biome_config = function()
+        return {
+          exe = get_biome_path(),
+          args = { "format", "--stdin-file-path", vim.fn.shellescape(vim.api.nvim_buf_get_name(0)) },
+          stdin = true,
+        }
+      end
+
+      local prettier_config = function()
+        return {
+          exe = get_prettier_path(),
+          args = { "--stdin-filepath", vim.fn.shellescape(vim.api.nvim_buf_get_name(0)) },
+          stdin = true,
+        }
+      end
+
       if biome_exists() then
-        formatter = function()
-          return {
-            exe = get_biome_path(),
-            args = { "format", "--stdin-file-path", vim.fn.shellescape(vim.api.nvim_buf_get_name(0)) },
-            stdin = true,
-          }
-        end
+        formatter = biome_config
       elseif prettier_exists() then
-        formatter = function()
-          return {
-            exe = get_prettier_path(),
-            args = { "--stdin-filepath", vim.fn.shellescape(vim.api.nvim_buf_get_name(0)) },
-            stdin = true,
-          }
-        end
+        formatter = prettier_config
+      end
+
+      if prettier_exists() then
+        html_formatter = prettier_config
       end
 
       local sql_formatter = nil
@@ -1185,7 +1195,7 @@ local function set_up_nvim_only_plugins(plugins)
         settings = {
           css = { formatter },
           scss = { formatter },
-          html = { formatter },
+          html = { formatter = html_formatter },
           javascript = { formatter },
           javascriptreact = { formatter },
           typescript = { formatter },
@@ -1207,7 +1217,7 @@ local function set_up_nvim_only_plugins(plugins)
         [[
       augroup FormatAutogroup
         autocmd!
-        autocmd BufWritePost *.js,*.jsx,*.ts,*.tsx,*.html,*css,*json,*.md FormatWrite
+        autocmd BufWritePost *.js,*.jsx,*.ts,*.tsx,*.html,*css,*json,*.jsonc,*.md FormatWrite
       augroup END
       ]],
         true
@@ -1392,6 +1402,7 @@ local function set_up_nvim_only_plugins(plugins)
         ["sql"] = true,
         ["md"] = true,
         ["json"] = true,
+        ["jsonc"] = true,
         ["markdown"] = true,
         ["swift"] = true,
       }

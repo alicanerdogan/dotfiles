@@ -1574,17 +1574,6 @@ local function set_up_nvim_only_plugins(plugins)
   })
 
   table.insert(plugins, {
-    "OXY2DEV/markview.nvim",
-    lazy = false,
-    dependencies = {
-      "nvim-treesitter/nvim-treesitter",
-      "nvim-tree/nvim-web-devicons",
-    },
-    config = function()
-    end,
-  })
-
-  table.insert(plugins, {
     "nvim-pack/nvim-spectre",
     config = function()
       require('spectre').setup({

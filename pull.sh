@@ -6,6 +6,7 @@ if [[ $os == "Darwin" ]]; then
   cp ~/.shell.sh .shell.mac.sh 
   cp ~/.alacritty.toml .alacritty.mac.toml 
   cp ~/.wezterm.lua .wezterm.lua
+  cp -R ~/.config/flashspace ./flashspace/
 elif [[ $os == "Linux" ]]; then
   cp ~/.shell.sh .shell.linux.sh 
   cp ~/.alacritty.yml .alacritty.linux.yml 

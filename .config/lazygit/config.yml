@@ -10,21 +10,21 @@ gui:
   timeFormat: 02 Jan 06
   shortTimeFormat: 00:00
   theme:
-    # activeBorderColor:
-    #   - '#e6c384'
-    #   - bold
-    # inactiveBorderColor:
-    #   - '#a4a7a4'
-    # optionsTextColor:
-    #   - '#7fb4ca'
-    # selectedLineBgColor:
-    #   - '#24262D'
-    # selectedRangeBgColor:
-    #   - '#24262D'
-    # cherryPickedCommitBgColor:
-    #   - '#24262D'
-    # cherryPickedCommitFgColor:
-    #   - '#e46876'
+    activeBorderColor:
+      - '#e6c384'
+      - bold
+    inactiveBorderColor:
+      - '#a4a7a4'
+    optionsTextColor:
+      - '#7fb4ca'
+    selectedLineBgColor:
+      - '#24262D'
+    selectedRangeBgColor:
+      - '#24262D'
+    cherryPickedCommitBgColor:
+      - '#24262D'
+    cherryPickedCommitFgColor:
+      - '#e46876'
   commitLength:
     show: false
   showNumstatInFilesView: true

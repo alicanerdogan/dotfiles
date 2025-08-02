@@ -1362,9 +1362,6 @@ local function set_up_nvim_only_plugins(plugins)
 
   table.insert(plugins, {
     "lewis6991/gitsigns.nvim",
-    dependencies = {
-      'sindrets/diffview.nvim'
-    },
     config = function()
       require('gitsigns').setup {
         signs                        = {

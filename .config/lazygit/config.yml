@@ -1,0 +1,102 @@
+# Config relating to the Lazygit UI
+gui:
+  nerdFontsVersion: "3"
+  tabWidth: 2
+  mouseEvents: true
+  sidePanelWidth: 0.3333
+  expandFocusedSidePanel: true
+  expandedSidePanelWeight: 2
+  # Uses Go's time format syntax: https://pkg.go.dev/time#Time.Format
+  timeFormat: 02 Jan 06
+  shortTimeFormat: 00:00
+  theme:
+    # activeBorderColor:
+    #   - '#e6c384'
+    #   - bold
+    # inactiveBorderColor:
+    #   - '#a4a7a4'
+    # optionsTextColor:
+    #   - '#7fb4ca'
+    # selectedLineBgColor:
+    #   - '#24262D'
+    # selectedRangeBgColor:
+    #   - '#24262D'
+    # cherryPickedCommitBgColor:
+    #   - '#24262D'
+    # cherryPickedCommitFgColor:
+    #   - '#e46876'
+  commitLength:
+    show: false
+  showNumstatInFilesView: true
+  showRandomTip: false
+  showCommandLog: false
+  showBottomLine: false
+  showPanelJumps: true
+  showFileIcons: true
+  # Window border style.
+  # One of 'rounded' (default) | 'single' | 'double' | 'hidden' | 'bold'
+  border: hidden
+  animateExplosion: false
+
+git:
+  pull:
+    mode: 'rebase'
+
+  paging:
+    externalDiffCommand: "difft --color=always"
+
+  mainBranches:
+    - master
+    - main
+
+  skipHookPrefix: WIP
+
+  autoFetch: true
+  autoRefresh: true
+
+  # If not "none", lazygit will automatically fast-forward local branches to match their upstream after fetching. Applies to branches that are not the currently checked out branch, and only to those that are strictly behind their upstream (as opposed to diverged).
+  # Possible values: 'none' | 'onlyMainBranches' | 'allBranches'
+  autoForwardBranches: allBranches
+
+  # If true, git diffs are rendered with the `--ignore-all-space` flag, which ignores whitespace changes. Can be toggled from within Lazygit with `<c-w>`.
+  ignoreWhitespaceInDiffView: true
+
+  # The number of lines of context to show around each diff hunk. Can be changed from within Lazygit with the `{` and `}` keys.
+  diffContextSize: 3
+
+  # The threshold for considering a file to be renamed, in percent. Can be changed from within Lazygit with the `(` and `)` keys.
+  renameSimilarityThreshold: 50
+
+  # See https://github.com/jesseduffield/lazygit/blob/master/docs/Config.md#predefined-commit-message-prefix
+  commitPrefix: []
+  # See https://github.com/jesseduffield/lazygit/blob/master/docs/Config.md#predefined-commit-message-prefix
+  commitPrefixes: {}
+  # See https://github.com/jesseduffield/lazygit/blob/master/docs/Config.md#predefined-branch-name-prefix
+  branchPrefix: ""
+
+  localBranchSortOrder: recency
+
+refresher:
+  # Re-fetch interval in seconds.
+  fetchInterval: 43200
+
+disableStartupPopups: true
+
+# User-configured commands that can be invoked from within Lazygit
+# See https://github.com/jesseduffield/lazygit/blob/master/docs/Custom_Command_Keybindings.md
+customCommands: []
+
+# See https://github.com/jesseduffield/lazygit/blob/master/docs/Config.md#custom-pull-request-urls
+services: {}
+
+os:
+  editPreset: 'nvim'
+  edit: 'nvim {{filename}}'
+  editAtLine: 'nvim +{{line}} {{filename}}'
+  editAtLineAndWait: 'nvim +{{line}} {{filename}}'
+  open: 'nvim {{filename}}'
+  openLink: 'open {{link}}'
+
+# If true, display a confirmation when subprocess terminates. This allows you to view the output of the subprocess before returning to Lazygit.
+promptToReturnFromSubprocess: false
+

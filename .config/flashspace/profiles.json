@@ -1,0 +1,51 @@
+{
+  "profiles" : [
+    {
+      "id" : "AF81D076-BDC3-4B78-BA25-03E8C7A2F520",
+      "name" : "Default",
+      "workspaces" : [
+        {
+          "apps" : [
+            {
+              "bundleIdentifier" : "com.mitchellh.ghostty",
+              "iconPath" : "/Applications/Ghostty.app/Contents/Resources/AppIcon.icns",
+              "name" : "Ghostty"
+            }
+          ],
+          "display" : "DELL U3223QE",
+          "id" : "B61A77EE-777A-4A38-BD97-D27BD40C6DCD",
+          "name" : "coding",
+          "shortcut" : "cmd+ctrl+opt+shift+c",
+          "symbolIconName" : "number.square.fill"
+        },
+        {
+          "apps" : [
+            {
+              "bundleIdentifier" : "org.mozilla.firefox",
+              "iconPath" : "/Applications/Firefox.app/Contents/Resources/firefox.icns",
+              "name" : "Firefox"
+            }
+          ],
+          "display" : "DELL U3223QE",
+          "id" : "FF13ED19-C9E2-4537-BDD6-C12695AFD274",
+          "name" : "browsing",
+          "shortcut" : "cmd+ctrl+opt+shift+b",
+          "symbolIconName" : "laptopcomputer"
+        },
+        {
+          "apps" : [
+            {
+              "bundleIdentifier" : "com.spotify.client",
+              "iconPath" : "/Applications/Spotify.app/Contents/Resources/Icon.icns",
+              "name" : "Spotify"
+            }
+          ],
+          "display" : "DELL U3223QE",
+          "id" : "5E8D40E8-1F80-43B9-AF09-6B5B10DB2774",
+          "name" : "others",
+          "shortcut" : "cmd+ctrl+opt+shift+o"
+        }
+      ]
+    }
+  ]
+}

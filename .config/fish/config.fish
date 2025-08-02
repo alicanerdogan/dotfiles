@@ -134,6 +134,7 @@ function set_env_vars
 
   set -x EDITOR          nvim
   set -x PKG_CONFIG_PATH "/opt/homebrew/opt/libffi/lib/pkgconfig:/opt/homebrew/opt/expat/lib/pkgconfig:/opt/homebrew/opt/zlib/lib/pkgconfig"
+  set -gx XDG_CONFIG_HOME "$HOME/.config" 
 
   set -x PATH /opt/homebrew/bin $PATH
   set -x PATH /opt/homebrew/opt/openjdk/bin $PATH

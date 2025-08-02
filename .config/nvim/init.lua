@@ -349,6 +349,125 @@ local function set_up_nvim_only_config()
       end
     end,
     { nargs = 0 })
+
+  -- Global variable to track the lazygit tab
+  local lazygit_tab = nil
+  local lazygit_buf = nil
+
+  local function toggle_lazygit(filepath)
+    -- Check if lazygit tab exists and is valid
+    if lazygit_tab and vim.api.nvim_tabpage_is_valid(lazygit_tab) then
+      -- Tab exists, check if we're currently on it
+      local current_tab = vim.api.nvim_get_current_tabpage()
+      if current_tab == lazygit_tab then
+        -- We're on the lazygit tab, close it
+        vim.cmd('tabclose')
+        lazygit_tab = nil
+        lazygit_buf = nil
+      else
+        -- Switch to the existing lazygit tab
+        vim.api.nvim_set_current_tabpage(lazygit_tab)
+      end
+    else
+      -- Tab doesn't exist, create new one
+      vim.cmd('tabnew')
+      lazygit_tab = vim.api.nvim_get_current_tabpage()
+
+      -- Create terminal buffer and run lazygit using termopen
+      lazygit_buf = vim.api.nvim_create_buf(false, true)
+      vim.api.nvim_set_current_buf(lazygit_buf)
+
+      -- Set buffer name and tab title
+      vim.api.nvim_buf_set_name(lazygit_buf, 'lazygit')
+      vim.api.nvim_buf_set_var(lazygit_buf, 'term_title', 'lazygit')
+
+      -- Set custom tab title by overriding the buffer's display name
+      vim.api.nvim_create_autocmd("BufEnter", {
+        buffer = lazygit_buf,
+        callback = function()
+          vim.opt_local.statusline = "%{substitute(bufname('%'),'.*:','','')}"
+        end,
+        once = true,
+      })
+
+      -- Set up buffer-local keymap to intercept <C-g>
+      vim.api.nvim_buf_set_keymap(lazygit_buf, 't', '<C-g>', '', {
+        noremap = true,
+        silent = true,
+        callback = function()
+          -- Close the lazygit tab from Neovim side
+          if lazygit_tab and vim.api.nvim_tabpage_is_valid(lazygit_tab) then
+            vim.schedule(function()
+              vim.api.nvim_set_current_tabpage(lazygit_tab)
+              vim.cmd('tabclose')
+              lazygit_tab = nil
+              lazygit_buf = nil
+            end)
+          end
+        end
+      })
+
+      local lazygit_cmd = 'lazygit'
+      if filepath and filepath ~= '' then
+        -- If a file path is provided, pass it to lazygit
+        lazygit_cmd = lazygit_cmd .. ' log -- ' .. filepath
+      end
+
+      -- Start lazygit with callback to close tab when process ends
+      vim.fn.termopen(lazygit_cmd, {
+        on_exit = function(job_id, exit_code, event_type)
+          -- Close the tab when lazygit exits
+          if lazygit_tab and vim.api.nvim_tabpage_is_valid(lazygit_tab) then
+            vim.schedule(function()
+              vim.api.nvim_set_current_tabpage(lazygit_tab)
+              vim.cmd('tabclose')
+              lazygit_tab = nil
+              lazygit_buf = nil
+            end)
+          end
+        end
+      })
+
+      -- Set up autocmd to clean up when tab is closed
+      vim.api.nvim_create_autocmd("TabClosed", {
+        callback = function(args)
+          -- Check if the closed tab was our lazygit tab
+          if lazygit_tab and not vim.api.nvim_tabpage_is_valid(lazygit_tab) then
+            -- Clean up references
+            lazygit_tab = nil
+            lazygit_buf = nil
+          end
+        end,
+        once = false,
+      })
+
+      -- Enter terminal mode
+      vim.cmd('startinsert')
+    end
+  end
+
+  local function toggle_lazygit_cmd()
+    toggle_lazygit()
+  end
+
+  local function toggle_lazygit_file_history_cmd()
+    local filepath = vim.fn.expand('%:p')
+    if filepath == '' then
+      print("No file is currently open.")
+      return
+    end
+
+
+    toggle_lazygit(filepath)
+  end
+
+  -- Create the user command
+  vim.api.nvim_create_user_command('ToggleLazygit', toggle_lazygit_cmd, {
+    desc = 'Toggle lazygit in a dedicated tab'
+  })
+  vim.api.nvim_create_user_command('ToggleLazygitFileHistory', toggle_lazygit_file_history_cmd, {
+    desc = 'Toggle lazygit file history in a dedicated tab'
+  })
 end
 
 local function set_up_vscode_config()
@@ -1247,22 +1366,6 @@ local function set_up_nvim_only_plugins(plugins)
       'sindrets/diffview.nvim'
     },
     config = function()
-      vim.keymap.set('n', '<leader>gh', ':DiffviewFileHistory %<CR>', { desc = "Git: Show file history" })
-      vim.api.nvim_create_user_command('ToggleDiffview',
-        function()
-          local currentTab = vim.api.nvim_get_current_tabpage()
-          for _, win in pairs(vim.api.nvim_tabpage_list_wins(currentTab)) do
-            local buf = vim.api.nvim_win_get_buf(win)
-            local buffName = vim.api.nvim_buf_get_name(buf)
-            if vim.startswith(buffName, "diffview://") or vim.endswith(buffName, "DiffviewFilePanel") then
-              vim.cmd("tabclose")
-              return
-            end
-          end
-          vim.cmd(":DiffviewOpen")
-        end,
-        { nargs = 0 })
-
       require('gitsigns').setup {
         signs                        = {
           add          = { text = '│' },
@@ -1741,8 +1844,9 @@ local function set_up_nvim_only_keybindings()
   vim.keymap.set('n', '<C-t>', ':SmartToggleTerm<CR>', { noremap = true, desc = "Toggle terminal" })
   -- toggles the trouble
   vim.keymap.set('n', '<C-j>', ':Trouble diagnostics toggle<CR>', { noremap = true, desc = "Toggle actions view" })
-  -- toggle the diffview
-  vim.keymap.set('n', '<C-g>', ':ToggleDiffview<CR>', { noremap = true, desc = "Toggle git overview" })
+  -- toggle lazygit
+  vim.keymap.set('n', '<C-g>', ':ToggleLazygit<CR>', { noremap = true, desc = "Toggle git overview" })
+  vim.keymap.set('n', '<leader>gh', ':ToggleLazygitFileHistory<CR>', { desc = "Git: Show file history" })
 
   -- REFACTORING
   -- code actions

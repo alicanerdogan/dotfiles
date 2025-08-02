@@ -19,4 +19,6 @@ rm -rf ~/.config/nvim.bak
 cp -r ~/.config/ghostty.bak/**  ~/.config/ghostty
 rm -rf ~/.config/ghostty.bak
 mv -f ~/.tmux.conf.bak  ~/.tmux.conf 
+cp -r ~/.config/lazygit.bak/**  ~/.config/lazygit
+rm -rf ~/.config/lazygit.bak
 

@@ -84,7 +84,13 @@ disableStartupPopups: true
 
 # User-configured commands that can be invoked from within Lazygit
 # See https://github.com/jesseduffield/lazygit/blob/master/docs/Custom_Command_Keybindings.md
-customCommands: []
+customCommands:
+  - key: 'N'
+    context: 'global'
+    description: 'Create draft PR'
+    command: 'gh pr create -d'
+    loadingText: 'Creating draft PR...'
+    output: terminal
 
 # See https://github.com/jesseduffield/lazygit/blob/master/docs/Config.md#custom-pull-request-urls
 services: {}

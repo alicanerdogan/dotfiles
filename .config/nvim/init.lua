@@ -354,7 +354,7 @@ local function set_up_nvim_only_config()
   local lazygit_tab = nil
   local lazygit_buf = nil
 
-  local function toggle_lazygit(filepath)
+  local function toggle_lazygit(cmd)
     -- Check if lazygit tab exists and is valid
     if lazygit_tab and vim.api.nvim_tabpage_is_valid(lazygit_tab) then
       -- Tab exists, check if we're currently on it
@@ -375,6 +375,7 @@ local function set_up_nvim_only_config()
 
       -- Create terminal buffer and run lazygit using termopen
       lazygit_buf = vim.api.nvim_create_buf(false, true)
+      vim.bo[lazygit_buf].filetype = 'lazygit'
       vim.api.nvim_set_current_buf(lazygit_buf)
 
       -- Set buffer name and tab title
@@ -408,9 +409,9 @@ local function set_up_nvim_only_config()
       })
 
       local lazygit_cmd = 'lazygit'
-      if filepath and filepath ~= '' then
-        -- If a file path is provided, pass it to lazygit
-        lazygit_cmd = lazygit_cmd .. ' log -- ' .. filepath
+      if cmd and cmd ~= '' then
+        -- If a cmd is provided, set as lazygit_cmd
+        lazygit_cmd = cmd
       end
 
       -- Start lazygit with callback to close tab when process ends
@@ -457,8 +458,23 @@ local function set_up_nvim_only_config()
       return
     end
 
+    local function get_fzf_command()
+      -- create an array of strings for command
+      local git_log_cmd = 'git log --format="%h %ad %s" --date=short --follow ' .. filepath
+      local diff_preview_cmd = 'DFT_COLOR=always git diff -w {1}^ {1} -- ' .. filepath
+      local fzf_cmd = 'fzf --ansi ' ..
+        '--preview "' .. diff_preview_cmd .. '" ' ..
+        '--preview-window=right:70%:wrap ' ..
+        '--bind "enter:execute(' .. diff_preview_cmd .. ' | bat --style=plain --paging=always)" ' ..
+        '--bind "ctrl-/:toggle-preview" ' ..
+        '--bind "ctrl-u:preview-page-up" ' ..
+        '--bind "ctrl-d:preview-page-down" ' ..
+        '--header "CTRL-/ (toggle preview), CTRL-U/D (scroll preview)"'
+      local cmd = git_log_cmd .. ' | ' .. fzf_cmd
+      return cmd
+    end
 
-    toggle_lazygit(filepath)
+    toggle_lazygit(get_fzf_command())
   end
 
   -- Create the user command
@@ -540,7 +556,7 @@ local function set_up_nvim_only_plugins(plugins)
       end
       require("lualine").setup({
         options = {
-          disabled_filetypes = { 'neo-tree', 'DiffviewFiles' },
+          disabled_filetypes = { 'neo-tree', 'lazygit' },
         },
         sections = {
           lualine_c = {
@@ -1505,6 +1521,10 @@ local function set_up_nvim_only_plugins(plugins)
         ["jsonc"] = true,
         ["markdown"] = true,
         ["swift"] = true,
+        ["kotlin"] = true,
+        ["html"] = true,
+        ["css"] = true,
+        ["yaml"] = true,
       }
       vim.api.nvim_set_keymap("i", "<C-L>", 'copilot#Accept("<CR>")', { silent = true, expr = true })
       vim.api.nvim_set_keymap("i", "<C-J>", 'copilot#Previous()', { silent = true, expr = true })

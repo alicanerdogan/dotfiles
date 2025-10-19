@@ -463,13 +463,13 @@ local function set_up_nvim_only_config()
       local git_log_cmd = 'git log --format="%h %ad %s" --date=short --follow ' .. filepath
       local diff_preview_cmd = 'DFT_COLOR=always git diff -w {1}^ {1} -- ' .. filepath
       local fzf_cmd = 'fzf --ansi ' ..
-        '--preview "' .. diff_preview_cmd .. '" ' ..
-        '--preview-window=right:70%:wrap ' ..
-        '--bind "enter:execute(' .. diff_preview_cmd .. ' | bat --style=plain --paging=always)" ' ..
-        '--bind "ctrl-/:toggle-preview" ' ..
-        '--bind "ctrl-u:preview-page-up" ' ..
-        '--bind "ctrl-d:preview-page-down" ' ..
-        '--header "CTRL-/ (toggle preview), CTRL-U/D (scroll preview)"'
+          '--preview "' .. diff_preview_cmd .. '" ' ..
+          '--preview-window=right:70%:wrap ' ..
+          '--bind "enter:execute(' .. diff_preview_cmd .. ' | bat --style=plain --paging=always)" ' ..
+          '--bind "ctrl-/:toggle-preview" ' ..
+          '--bind "ctrl-u:preview-page-up" ' ..
+          '--bind "ctrl-d:preview-page-down" ' ..
+          '--header "CTRL-/ (toggle preview), CTRL-U/D (scroll preview)"'
       local cmd = git_log_cmd .. ' | ' .. fzf_cmd
       return cmd
     end
@@ -517,9 +517,14 @@ local function set_up_global_plugins(plugins)
     version = '*',
     config = function()
       local MiniAI = require("mini.ai")
+      local spec_treesitter = MiniAI.gen_spec.treesitter
       MiniAI.setup({
         custom_textobjects = {
-          D = MiniAI.gen_spec.treesitter({ a = '@assignment.outer', i = '@assignment.inner' }),
+          D = spec_treesitter({ a = '@assignment.outer', i = '@assignment.inner' }),
+          A = spec_treesitter({
+            a = '@variable.value',
+            i = '@variable.name',
+          }),
         }
       })
     end,

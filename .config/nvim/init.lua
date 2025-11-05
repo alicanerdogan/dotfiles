@@ -59,7 +59,12 @@ local function get_biome_path()
   if root_dir == nil then
     return nil
   end
-  return root_dir .. '/node_modules/.bin/biome'
+  local biome_path = root_dir .. '/node_modules/.bin/biome'
+  if file_exists(biome_path) then
+    return biome_path
+  end
+  biome_path = root_dir .. '/node_modules/@biomejs/biome/bin/biome'
+  return biome_path
 end
 
 local function get_prettier_path()
@@ -641,7 +646,7 @@ local function set_up_nvim_only_plugins(plugins)
         if vim.lsp.get_clients then
           ret = vim.lsp.get_clients(opts)
         else
-          ret = vim.lsp.get_active_clients(opts)
+          ret = vim.lsp.get_clients(opts)
           if opts and opts.method then
             ret = vim.tbl_filter(function(client)
               return client.supports_method(opts.method, { bufnr = opts.bufnr })
@@ -795,7 +800,7 @@ local function set_up_nvim_only_plugins(plugins)
         { noremap = true, desc = "Find files in the current directory" })
       -- searching with git tracked files
       vim.keymap.set('n', '<leader>ff', function()
-          require('fzf-lua').live_grep_glob({
+          require('fzf-lua').live_grep({
             no_esc = true,
             search = " -- !*.test.html !*.test.ts !*.spec.ts !*.md !*.graphql !*.json !*.lock !*.mock !*.xlf",
             winopts = {
@@ -812,9 +817,9 @@ local function set_up_nvim_only_plugins(plugins)
         { noremap = true, desc = "Search in current directory" })
       -- searching the word under the cursor within git tracked files
       vim.keymap.set('n', '<leader>fg', function() require('fzf-lua').grep_cword() end,
-        { noremap = true, desc = "search current word in current directory" })
+        { noremap = true, desc = "Search current word in current directory" })
       vim.keymap.set('v', '<leader>fg', function() require('fzf-lua').grep_cword() end,
-        { noremap = true, desc = "search current word in current directory" })
+        { noremap = true, desc = "Search current word in current directory" })
       -- searching symbols in the document
       vim.keymap.set('n', '<leader>fs', function() require('fzf-lua').treesitter({ previewer = false }) end,
         { noremap = true, desc = "Search symbols in the buffer" })
@@ -827,31 +832,38 @@ local function set_up_nvim_only_plugins(plugins)
         function() require('fzf-lua').oldfiles({ cwd = get_root_directory(), previewer = false }) end,
         { noremap = true, desc = "Search in recent files" })
       -- searching within modified files
-      vim.keymap.set('n', '<leader>fm',
+      vim.keymap.set('n', '<leader>fm', function() require('fzf-lua').git_status() end,
+        { noremap = true, desc = "Search in modified files" })
+      -- searching within diff files from main branch
+      vim.keymap.set('n', '<leader>fd',
         function()
-          local fzf_lua = require('fzf-lua')
-          local actions = vim.deepcopy(fzf_lua.defaults.actions.files)
-          actions['ctrl-q'] = {
-            prefix = "select-all+",
-            fn = fzf_lua.actions.file_edit_or_qf,
-          }
-          fzf_lua.fzf_exec("git diff --name-only origin/" .. git_main_branch(), {
-            actions = actions,
+          require('fzf-lua').fzf_exec("git diff --name-only origin/" .. git_main_branch(), {
+            fzf_opts = {
+              ["--multi"] = true,
+            },
+            cwd = vim.loop.cwd(),
+            file_icons = true, -- Tells fzf-lua to load the file icon sets
+            actions = require("fzf-lua.config").globals.actions.files,
+            fn_transform = function(x)
+              return FzfLua.make_entry.file(x, { file_icons = true, color_icons = true })
+            end,
           })
         end,
-        { noremap = true, desc = "Search in modified files" })
+        { noremap = true, desc = "Search in files that are different than main branch" })
       -- searching with ast-grep
       vim.keymap.set('n', '<leader>ft',
         function()
-          local fzf_lua = require('fzf-lua')
-          local actions = vim.deepcopy(fzf_lua.defaults.actions.files)
-          actions['ctrl-q'] = {
-            prefix = "select-all+",
-            fn = fzf_lua.actions.file_edit_or_qf,
-          }
           require('fzf-lua').fzf_live("sg --context 0 --heading never --pattern <query> 2>/dev/null", {
+            fzf_opts = {
+              ["--multi"] = true,
+            },
+            cwd = vim.loop.cwd(),
+            actions = require("fzf-lua.config").globals.actions.files,
             exec_empty_query = false,
-            actions = actions,
+            file_icons = true, -- Tells fzf-lua to load the file icon sets
+            fn_transform = function(x)
+              return FzfLua.make_entry.file(x, { file_icons = true, color_icons = true })
+            end,
           })
         end,
         { noremap = true, desc = "Search with ast-grep" })
@@ -1218,69 +1230,53 @@ local function set_up_nvim_only_plugins(plugins)
       },
     },
     config = function()
-      local lspconfig = require('lspconfig')
       -- Reserve a space in the gutter
       vim.opt.signcolumn = 'yes'
 
       require('mason').setup({})
-      ---@diagnostic disable-next-line: missing-fields
       require('mason-lspconfig').setup({
         ensure_installed = { 'lua_ls', 'ts_ls', 'jsonls', 'eslint', 'fish_lsp', },
+        automatic_enable = true,
+      })
+
+      vim.lsp.config('ts_ls', {
         handlers = {
-          function(server_name)
-            local capabilities = require('blink.cmp').get_lsp_capabilities()
-            lspconfig[server_name].setup({
-              capabilities = capabilities,
-            })
+          ["textDocument/definition"] = function(err, result, ...)
+            vim.print("hello ts_ls definition")
+            vim.inspect(result)
+            result = vim.islist(result) and result[1] or result
+            return vim.lsp.handlers["textDocument/definition"](err, result, ...)
           end,
-          lua_ls = function()
-            local capabilities = require('blink.cmp').get_lsp_capabilities()
-            lspconfig.lua_ls.setup({
-              capabilities = capabilities,
-              settings = {
-                Lua = {
-                  runtime = {
-                    version = 'LuaJIT',
-                  },
-                  diagnostics = {
-                    globals = {
-                      'vim',
-                      'require',
-                    },
-                  },
-                  workspace = {
-                    library = vim.api.nvim_get_runtime_file("", true),
-                  },
-                  telemetry = {
-                    enable = false,
-                  },
-                },
+        },
+      })
+
+      vim.lsp.config('lua_ls', {
+        settings = {
+          Lua = {
+            runtime = {
+              version = 'LuaJIT',
+            },
+            diagnostics = {
+              globals = {
+                'vim',
+                'require',
               },
-            })
-          end,
-          ts_ls = function()
-            local capabilities = require('blink.cmp').get_lsp_capabilities()
-            lspconfig.ts_ls.setup({
-              capabilities = capabilities,
-              on_init = function()
-                lspconfig.ts_ls.setup({
-                  handlers = {
-                    -- When using ts_ls, go to definition should open the first result and ignore the others in the list
-                    ["textDocument/definition"] = function(err, result, ...)
-                      result = vim.tbl_islist(result) and result[1] or result
-                      vim.lsp.handlers["textDocument/definition"](err, result, ...)
-                    end,
-                  },
-                })
-              end,
-            })
-          end,
-        }
+            },
+            workspace = {
+              library = vim.api.nvim_get_runtime_file("", true),
+            },
+            telemetry = {
+              enable = false,
+            },
+          },
+        },
       })
 
       if biome_exists() then
         local biome_path = get_biome_path()
-        lspconfig.biome.setup({ cmd = { biome_path, 'lsp-proxy' } })
+        vim.lsp.config('biome', {
+          cmd = { biome_path, 'lsp-proxy' },
+        })
       end
     end
   })

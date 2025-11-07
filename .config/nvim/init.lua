@@ -867,6 +867,10 @@ local function set_up_nvim_only_plugins(plugins)
           })
         end,
         { noremap = true, desc = "Search with ast-grep" })
+      -- resume last fzf-lua picker
+      vim.keymap.set('n', '<leader>fc',
+        function() require('fzf-lua').resume() end,
+        { noremap = true, desc = "Continue the latest search session" })
     end,
   })
 

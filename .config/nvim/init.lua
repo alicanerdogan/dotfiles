@@ -148,7 +148,9 @@ local resize_windows = function()
 end
 
 local git_main_branch = function()
-  return vim.fn.system("git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'")
+  local main_branch = vim.fn.system("git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'")
+  main_branch = vim.trim(main_branch)
+  return main_branch
 end
 -- Utility functions end
 
@@ -610,268 +612,135 @@ local function set_up_nvim_only_plugins(plugins)
   })
 
   table.insert(plugins, {
-    "ibhagwan/fzf-lua",
-    dependencies = {
-      "nvim-tree/nvim-web-devicons",
+    "folke/snacks.nvim",
+    ---@type snacks.Config
+    opts = {
+      picker = {
+        sources = {
+          git_diff_upstream = {
+            title = "Git Diff (upstream)",
+            format = "file",
+            show_empty = true,
+            finder = function(_, ctx)
+              return require("snacks.picker.source.proc").proc(
+                ctx:opts({
+                  cmd = "git",
+                  args = { "diff", "--name-only", "origin/" .. git_main_branch() },
+                  ---@param item snacks.picker.finder.Item
+                  transform = function(item)
+                    item.file = item.text
+                  end,
+                }),
+                ctx
+              )
+            end,
+          },
+          ast_grep = {
+            title = "AST Grep",
+            format = "file",
+            live = true,
+            supports_live = true,
+            show_empty = true,
+            finder = function(_, ctx)
+              if ctx.filter.search == "" then
+                return function() end
+              end
+              return require("snacks.picker.source.proc").proc(
+                ctx:opts({
+                  cmd = "sg",
+                  args = {
+                    "--context",
+                    "0",
+                    "--heading",
+                    "never",
+                    "--pattern",
+                    ctx.filter.search
+                  },
+                  ---@param item snacks.picker.finder.Item
+                  transform = function(item)
+                    -- sg output format: "file:line:col:match" or "file:line:match"
+                    local file, line, col, text = item.text:match("^(.+):(%d+):(%d+):(.*)$")
+                    if not file then
+                      file, line, text = item.text:match("^(.+):(%d+):(.*)$")
+                      col = 1
+                    end
+                    if file then
+                      item.file = file
+                      item.pos = { tonumber(line), tonumber(col) - 1 }
+                      item.line = text
+                    end
+                  end,
+                }),
+                ctx
+              )
+            end,
+          },
+        },
+      },
     },
-    opts = function()
-      local fzf = require("fzf-lua")
-      local config = fzf.config
-      local actions = fzf.actions
-
-      -- Quickfix
-      config.defaults.keymap.fzf["ctrl-q"] = "select-all+accept"
-      config.defaults.keymap.fzf["ctrl-u"] = "half-page-up"
-      config.defaults.keymap.fzf["ctrl-d"] = "half-page-down"
-      config.defaults.keymap.fzf["ctrl-x"] = "jump"
-      config.defaults.keymap.fzf["ctrl-f"] = "preview-page-down"
-      config.defaults.keymap.fzf["ctrl-b"] = "preview-page-up"
-      config.defaults.keymap.builtin["<c-f>"] = "preview-page-down"
-      config.defaults.keymap.builtin["<c-b>"] = "preview-page-up"
-
-      local img_previewer ---@type string[]?
-      for _, v in ipairs({
-        { cmd = "ueberzug", args = {} },
-        { cmd = "chafa",    args = { "{file}", "--format=symbols" } },
-        { cmd = "viu",      args = { "-b" } },
-      }) do
-        if vim.fn.executable(v.cmd) == 1 then
-          img_previewer = vim.list_extend({ v.cmd }, v.args)
-          break
-        end
-      end
-
-      local get_clients = function(opts)
-        local ret = {}
-        if vim.lsp.get_clients then
-          ret = vim.lsp.get_clients(opts)
-        else
-          ret = vim.lsp.get_clients(opts)
-          if opts and opts.method then
-            ret = vim.tbl_filter(function(client)
-              return client.supports_method(opts.method, { bufnr = opts.bufnr })
-            end, ret)
-          end
-        end
-        return opts and opts.filter and vim.tbl_filter(opts.filter, ret) or ret
-      end
-
-      return {
-        "default-title",
-        file_ignore_patterns = { "^.git/" },
-        fzf_colors = true,
-        fzf_opts = {
-          ["--no-scrollbar"] = true,
-        },
-        defaults = {
-          -- formatter = "path.filename_first",
-          formatter = "path.dirname_first",
-        },
-        previewers = {
-          builtin = {
-            extensions = {
-              ["png"] = img_previewer,
-              ["jpg"] = img_previewer,
-              ["jpeg"] = img_previewer,
-              ["gif"] = img_previewer,
-              ["webp"] = img_previewer,
-            },
-            ueberzug_scaler = "fit_contain",
-          },
-        },
-        ui_select = function(fzf_opts, items)
-          return vim.tbl_deep_extend("force", fzf_opts, {
-            prompt = " ",
-            winopts = {
-              title = " " .. vim.trim((fzf_opts.prompt or "Select"):gsub("%s*:%s*$", "")) .. " ",
-              title_pos = "center",
-            },
-          }, fzf_opts.kind == "codeaction" and {
-            winopts = {
-              layout = "vertical",
-              -- height is number of items minus 15 lines for the preview, with a max of 80% screen height
-              height = math.floor(math.min(vim.o.lines * 0.8 - 16, #items + 2) + 0.5) + 16,
-              width = 0.5,
-              preview = not vim.tbl_isempty(get_clients({ bufnr = 0, name = "vtsls" })) and {
-                layout = "vertical",
-                vertical = "down:15,border-top",
-                hidden = "hidden",
-              } or {
-                layout = "vertical",
-                vertical = "down:15,border-top",
-              },
-            },
-          } or {
-            winopts = {
-              width = 0.5,
-              -- height is number of items, with a max of 80% screen height
-              height = math.floor(math.min(vim.o.lines * 0.8, #items + 2) + 0.5),
-            },
-          })
-        end,
-        winopts = {
-          width = 0.8,
-          height = 0.8,
-          row = 0.5,
-          col = 0.5,
-          preview = {
-            scrollchars = { "┃", "" },
-          },
-        },
-        files = {
-          formatter = "path.filename_first",
-          cwd_prompt = false,
-          actions = {
-            ["alt-i"] = { actions.toggle_ignore },
-            ["alt-h"] = { actions.toggle_hidden },
-          },
-        },
-        grep = {
-          formatter = "path.filename_first",
-          hidden = true,
-          actions = {
-            ["alt-i"] = { actions.toggle_ignore },
-            ["alt-h"] = { actions.toggle_hidden },
-          },
-        },
-        glob = {
-          formatter = "path.filename_first",
-          rg_glob = true,
-          hidden = true,
-          -- first returned string is the new search query
-          -- second returned string are (optional) additional rg flags
-          -- @return string, string?
-          rg_glob_fn = function(query, opts)
-            local regex, flags = query:match("^(.-)%s%-%-(.*)$")
-            -- If no separator is detected wil return the original query
-            return (regex or query), flags
-          end,
-        },
-        lsp = {
-          symbols = {
-            symbol_hl = function(s)
-              return "TroubleIcon" .. s
-            end,
-            symbol_fmt = function(s)
-              return s:lower() .. "\t"
-            end,
-            child_prefix = false,
-          },
-          code_actions = {
-            previewer = vim.fn.executable("delta") == 1 and "codeaction_native" or nil,
-          },
-        },
-      }
-    end,
-    init = function()
-      vim.api.nvim_create_autocmd("User", {
-        pattern = "VeryLazy",
-        callback = function()
-          vim.ui.select = function(...)
-            require("lazy").load({ plugins = { "fzf-lua" } })
-            local plugin = require("lazy.core.config").spec.plugins["fzf-lua"]
-            local opts = require("lazy.core.plugin").values(plugin, "opts", false)
-            require("fzf-lua").register_ui_select(opts.ui_select or nil)
-            return vim.ui.select(...)
-          end
-        end,
-      })
-    end,
-    config = function(_, opts)
-      if opts[1] == "default-title" then
-        -- use the same prompt for all pickers for profile `default-title` and
-        -- profiles that use `default-title` as base profile
-        local function fix(t)
-          t.prompt = t.prompt ~= nil and " " or nil
-          for _, v in pairs(t) do
-            if type(v) == "table" then
-              fix(v)
-            end
-          end
-          return t
-        end
-        opts = vim.tbl_deep_extend("force", fix(require("fzf-lua.profiles.default-title")), opts)
-        opts[1] = nil
-      end
-      require("fzf-lua").setup(opts)
-
-      -- searching within git tracked files
-      vim.keymap.set('n', '<C-p>', function() require('fzf-lua').files({ cwd_prompt = false, previewer = false }) end,
-        { noremap = true, desc = "Find files in the current directory" })
-      -- searching with git tracked files
-      vim.keymap.set('n', '<leader>ff', function()
-          require('fzf-lua').live_grep({
-            no_esc = true,
-            search = " -- !*.test.html !*.test.ts !*.spec.ts !*.md !*.graphql !*.json !*.lock !*.mock !*.xlf",
-            winopts = {
-              preview = {
-                delay = 500,
-              },
-              on_create = function()
-                -- synthetically press ctrl-a to move the cursor to the beginning of the line
-                vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-a>", true, true, true), "n", true)
-              end,
+    keys = {
+      {
+        "<C-p>",
+        function()
+          Snacks.picker.files({
+            hidden = true,
+            layout = {
+              hidden = { "preview" },
             }
           })
         end,
-        { noremap = true, desc = "Search in current directory" })
-      -- searching the word under the cursor within git tracked files
-      vim.keymap.set('n', '<leader>fg', function() require('fzf-lua').grep_cword() end,
-        { noremap = true, desc = "Search current word in current directory" })
-      vim.keymap.set('v', '<leader>fg', function() require('fzf-lua').grep_cword() end,
-        { noremap = true, desc = "Search current word in current directory" })
-      -- searching symbols in the document
-      vim.keymap.set('n', '<leader>fs', function() require('fzf-lua').treesitter({ previewer = false }) end,
-        { noremap = true, desc = "Search symbols in the buffer" })
-      -- searching symbols in the workspace
-      vim.keymap.set('n', '<leader>fws',
-        function() require('fzf-lua').lsp_live_workspace_symbols({ previewer = false }) end,
-        { noremap = true, desc = "Search symbols in the current directory" })
-      -- searching within recent files
-      vim.keymap.set('n', '<leader>fr',
-        function() require('fzf-lua').oldfiles({ cwd = get_root_directory(), previewer = false }) end,
-        { noremap = true, desc = "Search in recent files" })
-      -- searching within modified files
-      vim.keymap.set('n', '<leader>fm', function() require('fzf-lua').git_status() end,
-        { noremap = true, desc = "Search in modified files" })
-      -- searching within diff files from main branch
-      vim.keymap.set('n', '<leader>fd',
+        desc = "Find files",
+      },
+      {
+        "<leader>ff",
         function()
-          require('fzf-lua').fzf_exec("git diff --name-only origin/" .. git_main_branch(), {
-            fzf_opts = {
-              ["--multi"] = true,
+          local glob = {
+            "!*.test.html",
+            "!*.test.ts",
+            "!*.spec.ts",
+            "!*.md",
+            "!*.graphql",
+            "!*.json",
+            "!*.lock",
+            "!*.mock",
+            "!*.xlf",
+          }
+          Snacks.picker.grep({
+            glob = glob,
+            actions = {
+              toggle_glob = function(picker)
+                if (picker.opts["glob"] == nil) then
+                  picker.opts["glob"] = glob
+                else
+                  picker.opts["glob"] = nil
+                end
+                picker:find()
+              end,
             },
-            cwd = vim.loop.cwd(),
-            file_icons = true, -- Tells fzf-lua to load the file icon sets
-            actions = require("fzf-lua.config").globals.actions.files,
-            fn_transform = function(x)
-              return FzfLua.make_entry.file(x, { file_icons = true, color_icons = true })
-            end,
+            win = {
+              input = {
+                keys = {
+                  ["<c-a>"] = { "toggle_glob", mode = { "n", "i" }, desc = "Toggle Glob Filter" },
+                },
+              },
+            },
           })
         end,
-        { noremap = true, desc = "Search in files that are different than main branch" })
-      -- searching with ast-grep
-      vim.keymap.set('n', '<leader>ft',
-        function()
-          require('fzf-lua').fzf_live("sg --context 0 --heading never --pattern <query> 2>/dev/null", {
-            fzf_opts = {
-              ["--multi"] = true,
-            },
-            cwd = vim.loop.cwd(),
-            actions = require("fzf-lua.config").globals.actions.files,
-            exec_empty_query = false,
-            file_icons = true, -- Tells fzf-lua to load the file icon sets
-            fn_transform = function(x)
-              return FzfLua.make_entry.file(x, { file_icons = true, color_icons = true })
-            end,
-          })
-        end,
-        { noremap = true, desc = "Search with ast-grep" })
-      -- resume last fzf-lua picker
-      vim.keymap.set('n', '<leader>fc',
-        function() require('fzf-lua').resume() end,
-        { noremap = true, desc = "Continue the latest search session" })
-    end,
+        -- You can also use dynamic flags using `--` separator. e.g. `-- -g *.test.ts`
+        desc = "Grep",
+      },
+      { "<leader>fg",  function() Snacks.picker.grep_word() end,                desc = "Grep: Visual selection or word", mode = { "n", "v" } },
+      { "<leader>fs",  function() Snacks.picker.lsp_symbols() end,              desc = "LSP symbols" },
+      { "<leader>fws", function() Snacks.picker.lsp_workspace_symbols() end,    desc = "LSP workspace symbols" },
+      { "<leader>fr",  function() Snacks.picker.recent() end,                   desc = "Recent files" },
+      { "<leader>fm",  function() Snacks.picker.git_diff({ group = true }) end, desc = "Find modified files" },
+      { "<leader>fd",  function() Snacks.picker.pick("git_diff_upstream") end,  desc = "Find modified files (Upstream)" },
+      { "<leader>ft",  function() Snacks.picker.pick("ast_grep") end,           desc = "Search with ast-grep" },
+      { "<leader>fc",  function() Snacks.picker.resume() end,                   desc = "Resume last picker" },
+      { "<leader>fpr", function() Snacks.picker.gh_pr() end,                    desc = "GitHub Pull Requests (Open)" },
+    },
+
+
   })
 
   table.insert(plugins, {
@@ -1267,7 +1136,10 @@ local function set_up_nvim_only_plugins(plugins)
               },
             },
             workspace = {
-              library = vim.api.nvim_get_runtime_file("", true),
+              library = {
+                "$VIMRUNTIME",
+                "$HOME/.local/share/nvim/lazy"
+              },
             },
             telemetry = {
               enable = false,
@@ -1865,7 +1737,7 @@ local function set_up_nvim_only_keybindings()
   -- toggles the terminal
   vim.keymap.set('n', '<C-t>', ':SmartToggleTerm<CR>', { noremap = true, desc = "Toggle terminal" })
   -- toggles the trouble
-  vim.keymap.set('n', '<C-j>', ':Trouble diagnostics toggle<CR>', { noremap = true, desc = "Toggle actions view" })
+  vim.keymap.set('n', '<C-j>', ':Trouble diagnostics toggle filter.buf=0<CR>', { noremap = true, desc = "Toggle actions view" })
   -- toggle lazygit
   vim.keymap.set('n', '<C-g>', ':ToggleLazygit<CR>', { noremap = true, desc = "Toggle git overview" })
   vim.keymap.set('n', '<leader>gh', ':ToggleLazygitFileHistory<CR>', { desc = "Git: Show file history" })
@@ -1893,9 +1765,9 @@ local function set_up_nvim_only_keybindings()
   -- quickfix - previous in the list
   vim.keymap.set('n', '<leader>jp', '<Cmd>:cn<CR>', { noremap = true, desc = "Jump to previous mark into quickfix" })
   -- linter warnings and errors
-  vim.keymap.set('n', '<leader>jl', '<Cmd>lua vim.diagnostic.goto_next()<CR>', { desc = "Jump to next error/warning" })
+  vim.keymap.set('n', '<leader>jl', '<Cmd>lua vim.diagnostic.jump({ count =  1, severity = vim.diagnostics.severity.ERROR })<CR>', { desc = "Jump to next error/warning" })
   -- linter warnings and errors
-  vim.keymap.set('n', '<leader>jL', '<Cmd>lua vim.diagnostic.goto_prev()<CR>',
+  vim.keymap.set('n', '<leader>jL', '<Cmd>lua vim.diagnostic.jump({ count = -1, severity = vim.diagnostics.severity.ERROR })<CR>',
     { desc = "Jump to previous error/warning" })
 
   -- PEEK/PREVIEW

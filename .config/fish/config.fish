@@ -139,6 +139,7 @@ function set_env_vars
   set -x PATH /opt/homebrew/bin $PATH
   set -x PATH /opt/homebrew/opt/openjdk/bin $PATH
   set -x PATH "$HOME/.cargo/bin" $PATH
+  set -x PATH "$HOME/.config/fish/bin" $PATH
 
   # pnpm
   set -gx PNPM_HOME "~/Library/pnpm"

@@ -145,9 +145,6 @@ eval $(brew shellenv)
 export PKG_CONFIG_PATH="/opt/homebrew/opt/libffi/lib/pkgconfig:/opt/homebrew/opt/expat/lib/pkgconfig:/opt/homebrew/opt/zlib/lib/pkgconfig"
 export AWS_SDK_LOAD_CONFIG=true
 
-source $(brew --prefix)/share/zsh-you-should-use/you-should-use.plugin.zsh
-source $(brew --prefix)/share/zsh-vi-mode/zsh-vi-mode.plugin.zsh
-
 # fnm
 eval "$(fnm env --use-on-cd)"
 

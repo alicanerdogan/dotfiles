@@ -1034,6 +1034,10 @@ local function set_up_nvim_only_plugins(plugins)
           },
         },
       })
+
+      vim.filetype.add({
+        extension = { mdx = "markdown" },
+      })
     end,
   })
 
@@ -1737,7 +1741,8 @@ local function set_up_nvim_only_keybindings()
   -- toggles the terminal
   vim.keymap.set('n', '<C-t>', ':SmartToggleTerm<CR>', { noremap = true, desc = "Toggle terminal" })
   -- toggles the trouble
-  vim.keymap.set('n', '<C-j>', ':Trouble diagnostics toggle filter.buf=0<CR>', { noremap = true, desc = "Toggle actions view" })
+  vim.keymap.set('n', '<C-j>', ':Trouble diagnostics toggle filter.buf=0<CR>',
+    { noremap = true, desc = "Toggle actions view" })
   -- toggle lazygit
   vim.keymap.set('n', '<C-g>', ':ToggleLazygit<CR>', { noremap = true, desc = "Toggle git overview" })
   vim.keymap.set('n', '<leader>gh', ':ToggleLazygitFileHistory<CR>', { desc = "Git: Show file history" })
@@ -1765,9 +1770,12 @@ local function set_up_nvim_only_keybindings()
   -- quickfix - previous in the list
   vim.keymap.set('n', '<leader>jp', '<Cmd>:cn<CR>', { noremap = true, desc = "Jump to previous mark into quickfix" })
   -- linter warnings and errors
-  vim.keymap.set('n', '<leader>jl', '<Cmd>lua vim.diagnostic.jump({ count =  1, severity = vim.diagnostics.severity.ERROR })<CR>', { desc = "Jump to next error/warning" })
+  vim.keymap.set('n', '<leader>jl',
+    '<Cmd>lua vim.diagnostic.jump({ count =  1, severity = vim.diagnostic.severity.ERROR })<CR>',
+    { desc = "Jump to next error/warning" })
   -- linter warnings and errors
-  vim.keymap.set('n', '<leader>jL', '<Cmd>lua vim.diagnostic.jump({ count = -1, severity = vim.diagnostics.severity.ERROR })<CR>',
+  vim.keymap.set('n', '<leader>jL',
+    '<Cmd>lua vim.diagnostic.jump({ count = -1, severity = vim.diagnostic.severity.ERROR })<CR>',
     { desc = "Jump to previous error/warning" })
 
   -- PEEK/PREVIEW

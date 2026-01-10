@@ -132,12 +132,18 @@ end
 function set_env_vars
   set -g fish_greeting
 
+  if test (uname) = "Darwin"
+    set -gx HOMEBREW_DIR "/opt/homebrew"
+  else if test (uname) = "Linux"
+    set -gx HOMEBREW_DIR "/home/linuxbrew/.linuxbrew"
+  end
+
   set -x EDITOR          nvim
-  set -x PKG_CONFIG_PATH "/opt/homebrew/opt/libffi/lib/pkgconfig:/opt/homebrew/opt/expat/lib/pkgconfig:/opt/homebrew/opt/zlib/lib/pkgconfig"
+  set -x PKG_CONFIG_PATH "$HOMEBREW_DIR/opt/libffi/lib/pkgconfig:$HOMEBREW_DIR/opt/expat/lib/pkgconfig:$HOMEBREW_DIR/opt/zlib/lib/pkgconfig"
   set -gx XDG_CONFIG_HOME "$HOME/.config" 
 
-  set -x PATH /opt/homebrew/bin $PATH
-  set -x PATH /opt/homebrew/opt/openjdk/bin $PATH
+  set -x PATH $HOMEBREW_DIR/bin $PATH
+  set -x PATH $HOMEBREW_DIR/opt/openjdk/bin $PATH
   set -x PATH "$HOME/.cargo/bin" $PATH
   set -x PATH "$HOME/.config/fish/bin" $PATH
 
@@ -194,4 +200,3 @@ if status is-interactive
 
   set_prompt
 end
-

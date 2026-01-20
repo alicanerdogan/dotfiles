@@ -80,6 +80,63 @@ function gswm --description "Switches to main branch"
   git switch $(git_main_branch)
 end
 
+function gh-pr-edit-body --description "Edit GitHub PR body interactively"
+  set tempfile (mktemp).md
+  gh pr view --json -q .body > $tempfile && \
+    $EDITOR $tempfile && \
+    gh pr edit --body-file $tempfile
+  rm -f $tempfile
+end
+
+function pvim --description "Pick a project to open in vim"
+  set PROJECT_DIRS ~/src ~/repos ~/repos/sandbox
+  # apply PROJECT_PRIORITY from global env
+  set PROJECT_PRIORITY (string split ' ' $PROJECT_PRIORITY)
+  set -l priority_entries
+  set -l normal_entries
+
+  for base in $PROJECT_DIRS
+    if test -d "$base"
+      set -l base_name (basename "$base")
+      for dir in $base/*/
+        if test -d "$dir"
+          set -l proj_name (basename "$dir")
+          set -l entry "$dir"\t"$proj_name [$base_name]"
+          set -l is_priority false
+
+          for pattern in $PROJECT_PRIORITY
+            if string match -rq "$pattern" "$proj_name"
+              set is_priority true
+              break
+            end
+          end
+
+          if test "$is_priority" = "true"
+            set -a priority_entries "$entry"
+          else
+            set -a normal_entries "$entry"
+          end
+        end
+      end
+    end
+  end
+
+  set -l entries $priority_entries $normal_entries
+
+  if test (count $entries) -eq 0
+    echo "No projects found in: $PROJECT_DIRS"
+    return 1
+  end
+
+  set -l selected (printf '%s\n' $entries | fzf --height 40% --reverse --tiebreak=index --prompt "Open project: " --with-nth=2 --delimiter='\t')
+
+  or return
+
+  set -l dir (string split \t "$selected")[1]
+  cd "$dir"
+  $EDITOR .
+end
+
 function set_git_aliases
   alias g="git"
   alias ga="git add"
@@ -138,7 +195,7 @@ function set_env_vars
     set -gx HOMEBREW_DIR "/home/linuxbrew/.linuxbrew"
   end
 
-  set -x EDITOR          nvim
+  set -gx EDITOR          nvim
   set -x PKG_CONFIG_PATH "$HOMEBREW_DIR/opt/libffi/lib/pkgconfig:$HOMEBREW_DIR/opt/expat/lib/pkgconfig:$HOMEBREW_DIR/opt/zlib/lib/pkgconfig"
   set -gx XDG_CONFIG_HOME "$HOME/.config" 
 

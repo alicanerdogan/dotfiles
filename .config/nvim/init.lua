@@ -152,6 +152,97 @@ local git_main_branch = function()
   main_branch = vim.trim(main_branch)
   return main_branch
 end
+
+local function dofile_safe(filepath)
+  local env = {
+    -- Only allow these globals
+    pairs = pairs,
+    ipairs = ipairs,
+    next = next,
+    tostring = tostring,
+    tonumber = tonumber,
+    type = type,
+    select = select,
+    string = {
+      byte = string.byte,
+      char = string.char,
+      find = string.find,
+      format = string.format,
+      gmatch = string.gmatch,
+      gsub = string.gsub,
+      len = string.len,
+      lower = string.lower,
+      match = string.match,
+      rep = string.rep,
+      reverse = string.reverse,
+      sub = string.sub,
+      upper = string.upper,
+    },
+    table = {
+      concat = table.concat,
+      insert = table.insert,
+      pack = table.pack,
+      remove = table.remove,
+      sort = table.sort,
+      unpack = table.unpack,
+    },
+    math = {
+      abs = math.abs,
+      acos = math.acos,
+      asin = math.asin,
+      atan = math.atan,
+      ceil = math.ceil,
+      cos = math.cos,
+      deg = math.deg,
+      exp = math.exp,
+      floor = math.floor,
+      fmod = math.fmod,
+      huge = math.huge,
+      log = math.log,
+      max = math.max,
+      min = math.min,
+      modf = math.modf,
+      pi = math.pi,
+      rad = math.rad,
+      random = math.random,
+      sin = math.sin,
+      sqrt = math.sqrt,
+      tan = math.tan,
+    },
+    -- Explicitly block dangerous functions
+    load = nil,
+    loadfile = nil,
+    dofile = nil,
+    require = nil,
+    rawget = nil,
+    rawset = nil,
+    getmetatable = nil,
+    setmetatable = nil,
+  }
+
+  local content = vim.secure.read(filepath)
+  if content == nil or type(content) == "boolean" then
+    return nil, "Error loading file"
+  end
+  local chunk, err = load(content, filepath, 't', env)
+
+  if err ~= nil then
+    return nil, "Error loading file: " .. err
+  end
+
+  if not chunk then
+    return nil, "failed to load: " .. err
+  end
+
+  -- Execute with timeout protection (if available)
+  local success, result = pcall(chunk)
+
+  if not success then
+    return nil, "Execution error: " .. result
+  end
+
+  return result
+end
 -- Utility functions end
 
 local function set_up_global_config()
@@ -357,131 +448,12 @@ local function set_up_nvim_only_config()
     end,
     { nargs = 0 })
 
-  -- Global variable to track the lazygit tab
-  local lazygit_tab = nil
-  local lazygit_buf = nil
-
-  local function toggle_lazygit(cmd)
-    -- Check if lazygit tab exists and is valid
-    if lazygit_tab and vim.api.nvim_tabpage_is_valid(lazygit_tab) then
-      -- Tab exists, check if we're currently on it
-      local current_tab = vim.api.nvim_get_current_tabpage()
-      if current_tab == lazygit_tab then
-        -- We're on the lazygit tab, close it
-        vim.cmd('tabclose')
-        lazygit_tab = nil
-        lazygit_buf = nil
-      else
-        -- Switch to the existing lazygit tab
-        vim.api.nvim_set_current_tabpage(lazygit_tab)
-      end
-    else
-      -- Tab doesn't exist, create new one
-      vim.cmd('tabnew')
-      lazygit_tab = vim.api.nvim_get_current_tabpage()
-
-      -- Create terminal buffer and run lazygit using termopen
-      lazygit_buf = vim.api.nvim_create_buf(false, true)
-      vim.bo[lazygit_buf].filetype = 'lazygit'
-      vim.api.nvim_set_current_buf(lazygit_buf)
-
-      -- Set buffer name and tab title
-      vim.api.nvim_buf_set_name(lazygit_buf, 'lazygit')
-      vim.api.nvim_buf_set_var(lazygit_buf, 'term_title', 'lazygit')
-
-      -- Set custom tab title by overriding the buffer's display name
-      vim.api.nvim_create_autocmd("BufEnter", {
-        buffer = lazygit_buf,
-        callback = function()
-          vim.opt_local.statusline = "%{substitute(bufname('%'),'.*:','','')}"
-        end,
-        once = true,
-      })
-
-      -- Set up buffer-local keymap to intercept <C-g>
-      vim.api.nvim_buf_set_keymap(lazygit_buf, 't', '<C-g>', '', {
-        noremap = true,
-        silent = true,
-        callback = function()
-          -- Close the lazygit tab from Neovim side
-          if lazygit_tab and vim.api.nvim_tabpage_is_valid(lazygit_tab) then
-            vim.schedule(function()
-              vim.api.nvim_set_current_tabpage(lazygit_tab)
-              vim.cmd('tabclose')
-              lazygit_tab = nil
-              lazygit_buf = nil
-            end)
-          end
-        end
-      })
-
-      local lazygit_cmd = 'lazygit'
-      if cmd and cmd ~= '' then
-        -- If a cmd is provided, set as lazygit_cmd
-        lazygit_cmd = cmd
-      end
-
-      -- Start lazygit with callback to close tab when process ends
-      vim.fn.termopen(lazygit_cmd, {
-        on_exit = function(job_id, exit_code, event_type)
-          -- Close the tab when lazygit exits
-          if lazygit_tab and vim.api.nvim_tabpage_is_valid(lazygit_tab) then
-            vim.schedule(function()
-              vim.api.nvim_set_current_tabpage(lazygit_tab)
-              vim.cmd('tabclose')
-              lazygit_tab = nil
-              lazygit_buf = nil
-            end)
-          end
-        end
-      })
-
-      -- Set up autocmd to clean up when tab is closed
-      vim.api.nvim_create_autocmd("TabClosed", {
-        callback = function(args)
-          -- Check if the closed tab was our lazygit tab
-          if lazygit_tab and not vim.api.nvim_tabpage_is_valid(lazygit_tab) then
-            -- Clean up references
-            lazygit_tab = nil
-            lazygit_buf = nil
-          end
-        end,
-        once = false,
-      })
-
-      -- Enter terminal mode
-      vim.cmd('startinsert')
-    end
-  end
-
   local function toggle_lazygit_cmd()
-    toggle_lazygit()
+    Snacks.lazygit.open({ win = { height = 0, width = 0 } })
   end
 
   local function toggle_lazygit_file_history_cmd()
-    local filepath = vim.fn.expand('%:p')
-    if filepath == '' then
-      print("No file is currently open.")
-      return
-    end
-
-    local function get_fzf_command()
-      -- create an array of strings for command
-      local git_log_cmd = 'git log --format="%h %ad %s" --date=short --follow ' .. filepath
-      local diff_preview_cmd = 'DFT_COLOR=always git diff -w {1}^ {1} -- ' .. filepath
-      local fzf_cmd = 'fzf --ansi ' ..
-          '--preview "' .. diff_preview_cmd .. '" ' ..
-          '--preview-window=right:70%:wrap ' ..
-          '--bind "enter:execute(' .. diff_preview_cmd .. ' | bat --style=plain --paging=always)" ' ..
-          '--bind "ctrl-/:toggle-preview" ' ..
-          '--bind "ctrl-u:preview-page-up" ' ..
-          '--bind "ctrl-d:preview-page-down" ' ..
-          '--header "CTRL-/ (toggle preview), CTRL-U/D (scroll preview)"'
-      local cmd = git_log_cmd .. ' | ' .. fzf_cmd
-      return cmd
-    end
-
-    toggle_lazygit(get_fzf_command())
+    Snacks.lazygit.log_file({ win = { height = 0, width = 0 } })
   end
 
   -- Create the user command
@@ -613,8 +585,13 @@ local function set_up_nvim_only_plugins(plugins)
 
   table.insert(plugins, {
     "folke/snacks.nvim",
+    priority = 1000,
+    lazy = false,
     ---@type snacks.Config
     opts = {
+      lazygit = {
+        enabled = true,
+      },
       picker = {
         sources = {
           git_diff_upstream = {
@@ -738,9 +715,61 @@ local function set_up_nvim_only_plugins(plugins)
       { "<leader>ft",  function() Snacks.picker.pick("ast_grep") end,           desc = "Search with ast-grep" },
       { "<leader>fc",  function() Snacks.picker.resume() end,                   desc = "Resume last picker" },
       { "<leader>fpr", function() Snacks.picker.gh_pr() end,                    desc = "GitHub Pull Requests (Open)" },
+      {
+        "<leader>rq",
+        function()
+          local items = {}
+          local tasks = {}
+          local qf_file = vim.fn.getcwd() .. '/.vscode/qf.lua'
+          if file_exists(qf_file) then
+            tasks = dofile_safe(qf_file)
+            if tasks ~= nil then
+              for _, task in pairs(tasks) do
+                local cmd = table.concat(task.cmd, "")
+                cmd = vim.trim(cmd)
+
+                local text = task.id
+                if task.description ~= nil then
+                  text = text .. " | " .. task.description
+                end
+
+                local item = {
+                  text = text,
+                  cmd = cmd,
+                }
+                table.insert(items, item)
+              end
+            end
+          end
+
+          Snacks.picker.pick({
+            file = false,
+            title = "Project Qucikfix Tasks",
+            source = "project_quickfix",
+            items = items,
+            format = "text",
+            layout = {
+              preset = "select",
+              layout = { max_width = 120 },
+              hidden = { "preview" },
+            },
+            confirm = function(picker, item)
+              picker:close()
+              Snacks.notifier.notify("Running task: " .. item.text, "info")
+
+              run_async_command(item.cmd, function(result)
+                if not result.success then
+                  Snacks.notifier.notify("Task failed with exit code: " .. result.code .. "\n" .. result.stderr, "error")
+                end
+                local lines = vim.split(result.stdout, "\n")
+                vim.fn.setqflist({}, 'r', { lines = lines })
+                vim.cmd.copen()
+              end)
+            end
+          })
+        end,
+      },
     },
-
-
   })
 
   table.insert(plugins, {

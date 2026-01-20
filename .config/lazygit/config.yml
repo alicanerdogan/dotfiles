@@ -77,6 +77,29 @@ customCommands:
     command: 'gh pr create -d'
     loadingText: 'Creating draft PR...'
     output: terminal
+  - key: '<c-e>'
+    context: 'global'
+    description: 'Edit PR description'
+    command: 'gh-pr-edit-body'
+    loadingText: 'Editing PR description...'
+    output: terminal
+  - key: '<c-o>'
+    context: 'global'
+    description: 'Open PR in browser'
+    command: 'ghpr'
+    loadingText: 'Opening PR in browser...'
+    output: none
+  - key: '<c-n>'
+    context: 'global'
+    description: 'Create draft PR with a base branch'
+    command: 'gh pr create -d --base {{.Form.BaseBranch}}'
+    prompts:
+      - type: 'input'
+        title: 'Base branch'
+        key: 'BaseBranch'
+        suggestions:
+          preset: 'branches'
+    output: terminal
 # See https://github.com/jesseduffield/lazygit/blob/master/docs/Config.md#custom-pull-request-urls
 services: {}
 os:

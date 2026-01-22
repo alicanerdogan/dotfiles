@@ -2,8 +2,10 @@
 
 os="$(uname)"
 
-mv -f ~/.shell.sh.bak  ~/.shell.sh 
-mv -f ~/.config/fish/config.fish.bak ~/.config/fish/config.fish
+mv -f ~/.gitignore_global.bak ~/.gitignore_global
+mv -f ~/.shell.sh.bak  ~/.shell.sh
+cp -r ~/.config/fish.bak/**  ~/.config/fish
+rm -rf ~/.config/fish.bak
 if [[ $os == "Darwin" ]]; then
   cp ~/.wezterm.lua.bak ~/.wezterm.lua
   mv -f ~/.alacritty.toml.bak  ~/.alacritty.toml

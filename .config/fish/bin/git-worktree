@@ -1,0 +1,469 @@
+#!/usr/bin/env fish
+# LICENSE: unlicense. This is free and unencumbered software released into the public domain.
+# see unlicense.org for full license
+#
+# source this command if you want to have it change directories for you
+
+set RED "\033[0;31m"
+set GREEN "\033[0;32m"
+set YELLOW "\033[0;33m"
+set CLEAR "\033[0m"
+set VERBOSE ""
+set REPO_PATH ""
+
+function usage
+    echo "Usage: worktree [-v] [--repo <path>] <action> [arguments]
+
+Actions:
+    new <branch-name>       Create a new git worktree
+    list                    List all worktrees for this repository
+    remove <name>           Remove a worktree
+    remove --force <name>   Force remove a worktree (even with uncommitted changes)
+
+Options:
+    -v, --verbose           Enable verbose output
+    --repo <path>           Operate on the repository at <path> instead of current directory
+
+Examples:
+    worktree new feature-branch
+    worktree new someuser:feature-branch    # Create from a fork
+    worktree list
+    worktree remove feature-branch
+    worktree remove --force feature-branch
+    worktree --repo /path/to/repo new feature-branch
+
+Creating worktrees:
+    Create a git worktree with <branch name>. Will create a worktree if one isn't
+    found that matches the given name.
+
+    To create a worktree from a github fork, use the format username:branchname:
+        worktree new someuser:feature-branch
+
+    Will copy over some untracked files to the new worktree. By default, this includes
+    .env, .envrc, .env.local, .tool-versions, and mise.toml files.
+
+Configuration:
+    To customize the list of untracked files to copy for a particular repository:
+        git config --add worktree.untrackedfiles \".env\"
+        git config --add worktree.untrackedfiles \"mise.toml\"
+
+    To set a global configuration for all repositories:
+        git config --global --add worktree.untrackedfiles \".env\"
+        git config --global --add worktree.untrackedfiles \"mise.toml\"
+
+    If you have any custom configuration set, it will override the defaults
+    completely, so add all files you want copied.
+
+Hooks:
+    After creating a new worktree, if a script named .vscode/__gitworktree_post_new
+    exists in the repository root, it will be executed automatically. This hook
+    runs from within the new worktree directory and can be used for setup tasks
+    like installing dependencies or configuring the environment."
+    return 1
+end
+
+function die
+    printf '%b%s%b\n' "$RED" "$argv[1]" "$CLEAR"
+    return 1
+end
+
+function warn
+    printf '%b%s%b\n' "$YELLOW" "$argv[1]" "$CLEAR"
+end
+
+# Get the git root directory, either from REPO_PATH or current directory
+function get_git_root
+    if test -n "$REPO_PATH"
+        # If REPO_PATH is set, change to it first
+        if not test -d "$REPO_PATH"
+            die "Repository path does not exist: $REPO_PATH"
+            return 1
+        end
+
+        pushd "$REPO_PATH" >/dev/null 2>&1 || begin
+            die "Failed to access repository: $REPO_PATH"
+            return 1
+        end
+
+        set git_root (git rev-parse --show-toplevel 2>/dev/null)
+        popd >/dev/null 2>&1
+
+        if test -z "$git_root"
+            die "Not a git repository: $REPO_PATH"
+            return 1
+        end
+
+        echo "$git_root"
+    else
+        # Use current directory
+        set git_root (git rev-parse --show-toplevel 2>/dev/null)
+        if test -z "$git_root"
+            die "Not in a git repository"
+            return 1
+        end
+        echo "$git_root"
+    end
+end
+
+# If at all possible, use copy-on-write to copy files. This is especially
+# important to allow us to copy node_modules directories efficiently
+#
+# On mac or bsd: try to use -c
+# see:
+# https://spin.atomicobject.com/2021/02/23/git-worktrees-untracked-files/
+#
+# On gnu: use --reflink
+#
+# Use /bin/cp directly to avoid any of the user's aliases - this script is
+# often eval'ed
+#
+# I tried to figure out how to actually determine the filesystem support for
+# copy-on-write, but did not find any good references, so I'm falling back on
+# "try and see if it fails"
+function cp_cow
+    if not /bin/cp -Rc "$argv[1]" "$argv[2]" 2>/dev/null
+        if not /bin/cp -R --reflink "$argv[1]" "$argv[2]" 2>/dev/null
+            if not /bin/cp -R "$argv[1]" "$argv[2]" 2>/dev/null
+                warn "Unable to copy file $argv[1] to $argv[2] - folder may not exist"
+            end
+        end
+    end
+end
+
+# Get the list of untracked files to copy from git config. If no config is
+# found, return the default list
+function get_untracked_files_pattern
+    # Default file patterns
+    set default_patterns "\\.env|\\.envrc|\\.env\\.local|\\.mise\\.toml|\\.tool-versions|mise\\.toml|Cargo\\.lock"
+
+    # Check if we have custom patterns in git config
+    if git config --get-all worktree.untrackedfiles >/dev/null 2>&1
+        set custom_patterns (git config --get-all worktree.untrackedfiles | tr '\n' '|' | sed 's/|$//')
+        echo "^($custom_patterns)\$"
+    else
+        echo "^($default_patterns)\$"
+    end
+end
+
+# List all worktrees for the current repository
+function cmd_list
+    set git_root (get_git_root)
+    or return 1
+
+    # Change to the git root to run worktree list
+    pushd "$git_root" >/dev/null 2>&1 || begin
+        die "Failed to access repository"
+        return 1
+    end
+
+    git worktree list
+    popd >/dev/null 2>&1
+end
+
+# Remove a worktree
+function cmd_remove
+    set force_flag ""
+    set worktree_name ""
+
+    # Parse arguments
+    for arg in $argv
+        if test "$arg" = --force -o "$arg" = -f
+            set force_flag --force
+        else
+            set worktree_name "$arg"
+        end
+    end
+
+    if test -z "$worktree_name"
+        die "Please specify a worktree name to remove"
+        echo "Usage: worktree remove [--force] <name>"
+        return 1
+    end
+
+    set git_root (get_git_root)
+    or return 1
+
+    # Get repository name and parent directory
+    set repo_name (basename "$git_root")
+    set parent_dir (dirname "$git_root")
+
+    # Convert branch name to directory name (replace slashes with underscores)
+    set dirname (string replace -a "/" "_" "$worktree_name")
+    set worktree_path "$parent_dir/$repo_name@$dirname"
+
+    # Check if worktree exists
+    if not test -d "$worktree_path"
+        die "Worktree '$repo_name@$dirname' does not exist"
+        return 1
+    end
+
+    # Change to the git root to run worktree remove
+    pushd "$git_root" >/dev/null 2>&1 || begin
+        die "Failed to access repository"
+        return 1
+    end
+
+    # Remove the worktree
+    if test -n "$force_flag"
+        if not git worktree remove $force_flag "$worktree_path"
+            popd >/dev/null 2>&1
+            die "Failed to remove worktree '$repo_name@$dirname'"
+            return 1
+        end
+    else
+        if not git worktree remove "$worktree_path"
+            popd >/dev/null 2>&1
+            die "Failed to remove worktree '$repo_name@$dirname'"
+            echo "Tip: Use --force to remove worktrees with uncommitted changes"
+            return 1
+        end
+    end
+
+    popd >/dev/null 2>&1
+    printf "%bRemoved worktree %s%b\n" "$GREEN" "$repo_name@$dirname" "$CLEAR"
+end
+
+# Create a worktree from a given branchname, in exactly the way I like it.
+function cmd_new
+    if test (count $argv) -eq 0
+        die "Please specify a branch name"
+        echo "Usage: worktree new <branch-name>"
+        return 1
+    end
+
+    if test -n "$VERBOSE"
+        set -g fish_trace 1
+    end
+
+    set branchname "$argv[1]"
+
+    # if the branch is of the form user:branch, assume that is a fork 'branch'
+    # of the current repository at github.com/user/<repo_name>
+    if string match -q "*:*" "$branchname"
+        set username (string split -m 1 ":" "$branchname")[1]
+        set branchname (string split -m 1 ":" "$branchname")[2]
+        set remote "$username"
+
+        # Check if remote exists
+        if not git remote get-url "$remote" >/dev/null 2>&1
+            # Get the origin URL and construct the fork URL
+            set origin_url (git remote get-url origin)
+
+            # Handle both SSH and HTTPS URLs
+            if string match -q "git@github.com:*" "$origin_url"
+                # SSH format: git@github.com:owner/repo.git
+                set repo_name (string split "/" "$origin_url")[-1]
+                set fork_url "git@github.com:$username/$repo_name"
+            else if string match -q "https://github.com/*" "$origin_url"
+                # HTTPS format: https://github.com/owner/repo.git
+                set repo_name (string split "/" "$origin_url")[-1]
+                set fork_url "https://github.com/$username/$repo_name"
+            else
+                die "Unable to determine fork URL from origin: $origin_url"
+                return 1
+            end
+
+            warn "Adding remote '$remote' for $fork_url"
+            if not git remote add "$remote" "$fork_url"
+                die "Failed to add remote '$remote'"
+                return 1
+            end
+        end
+
+        # Fetch from the remote
+        warn "Fetching from remote '$remote'"
+        if not git fetch "$remote"
+            die "Failed to fetch from remote '$remote'"
+            return 1
+        end
+
+        # Update the dirname to include the username prefix, and replace
+        # slashes with underscores
+        set dirname (string replace -a "/" "_" "$username"_"$branchname")
+    else
+        set remote origin
+        # Replace slashes with underscores. If there's no slash, dirname will equal
+        # branchname. So "alu/something-other" becomes "alu_something-other", but
+        # "quick-fix" stays unchanged
+        set dirname (string replace -a "/" "_" "$branchname")
+    end
+
+    # Find the git repository root and change to it; if you run this command
+    # from a directory within the repository this will make sure it still does
+    # the right thing
+    set git_root (get_git_root)
+    or return 1
+
+    # Get repository name and parent directory for new naming convention
+    set repo_name (basename "$git_root")
+    set parent_dir (dirname "$git_root")
+    set worktree_path "$parent_dir/$repo_name@$dirname"
+
+    # Change to the git root directory
+    cd "$git_root" || begin
+        die "Failed to change to git root directory"
+        return 1
+    end
+
+    # pull the most recent version of the remote
+    if not git pull
+        warn "Unable to run git pull, there may not be an upstream"
+    end
+
+    # if the branch name already exists, we want to check it out. Otherwise,
+    # create a new branch. I'm sure there's probably a way to do that in one
+    # command, but I'm done fiddling with git at this point
+    #
+    # As far as I can tell, we have to check locally and remotely separately if
+    # we want to be accurate. See https://stackoverflow.com/a/75040377 for the
+    # reasoning here. Also this has some caveats, but probably works well
+    # enough :shrug:
+    #
+    # if the branch exists locally:
+    if git for-each-ref --format='%(refname:lstrip=2)' refs/heads | grep -E "^$branchname\$" >/dev/null 2>&1
+        if not git worktree add "$worktree_path" "$branchname"
+            die "failed to create git worktree $branchname"
+            return 1
+        end
+        # if the branch exists on a remote:
+    else if git for-each-ref --format='%(refname:lstrip=3)' "refs/remotes/$remote" | grep -E "^$branchname\$" >/dev/null 2>&1
+        # create a local worktree tracking the remote branch
+        if not git worktree add -b "$branchname" "$worktree_path" "$remote/$branchname"
+            die "failed to create git worktree $remote/$branchname"
+            return 1
+        end
+    else
+        # otherwise, create a new branch
+        if test "$remote" != origin
+            warn "Branch $remote/$branchname not found, creating new local branch"
+        end
+        if not git worktree add -b "$branchname" "$worktree_path"
+            die "failed to create git worktree $branchname"
+            return 1
+        end
+    end
+
+    # Find untracked files that we want to copy to the new worktree
+    # get a list of untracked files to copy, either from "git config" or a
+    # default list
+    set untracked_file_re (get_untracked_files_pattern)
+
+    # The rule we're using here is to copy untracked files if:
+    # - They match the untracked file regex
+    # - *and* they are in a tracked directory
+    #
+    # This means we'll copy Cargo.lock from the root, for example, but not from
+    # inside a .gitignored `target` directory
+    set files_to_copy
+    for file in (fd -u "$untracked_file_re" 2>/dev/null)
+        set parent_dir (dirname "$file")
+        # Check if parent directory is tracked (or is root which is always tracked)
+        if test "$parent_dir" = "." -o ! (git check-ignore -q "$parent_dir" 2>/dev/null; echo $status) -eq 0
+            set -a files_to_copy "$file"
+        end
+    end
+
+    for f in $files_to_copy
+        cp_cow "$f" "$worktree_path/$f"
+    end
+
+    # now change to the new tree
+    cd "$worktree_path" || return
+
+    # Initialize and update submodules if they exist
+    if test -f "$git_root/.gitmodules"
+        warn "initializing submodules"
+        if not git submodule update --init --recursive
+            warn "Failed to initialize submodules"
+        end
+    end
+
+    printf "%bcreated worktree %s%b\n" "$GREEN" "$repo_name@$dirname" "$CLEAR"
+
+    # Execute post-new hook if it exists
+    set post_new_hook ".vscode/__gitworktree_post_new"
+    if test -f "$post_new_hook"
+        warn "executing post-new hook: $post_new_hook"
+        if test -x "$post_new_hook"
+            # Hook is executable, run it directly
+            if not "$post_new_hook"
+                warn "post-new hook failed with exit code $status"
+            end
+        else
+            # Hook is not executable, try to run it with bash
+            if not bash "$post_new_hook"
+                warn "post-new hook failed with exit code $status"
+            end
+        end
+    end
+end
+
+# Parse command line arguments
+set -l action ""
+set -l args
+
+# First pass: handle flags
+set -l remaining_args
+set -l next_is_repo_path false
+
+for arg in $argv
+    if test "$next_is_repo_path" = true
+        set REPO_PATH "$arg"
+        set next_is_repo_path false
+        continue
+    end
+
+    switch $arg
+        case help -h --help
+            usage
+            exit
+        case -v --verbose
+            set VERBOSE true
+        case --repo
+            set next_is_repo_path true
+        case '*'
+            set -a remaining_args $arg
+    end
+end
+
+# Check if --repo was provided but no path followed
+if test "$next_is_repo_path" = true
+    die "--repo requires a path argument"
+    usage
+    exit 1
+end
+
+# Second pass: determine action
+if test (count $remaining_args) -gt 0
+    set action $remaining_args[1]
+
+    # Check if first argument is a known action
+    switch $action
+        case new list remove
+            # Remove action from remaining args
+            set args $remaining_args[2..-1]
+        case '*'
+            die "Unknown action: $action"
+            echo "Valid actions: new, list, remove"
+            usage
+            exit 1
+    end
+else
+    # No arguments provided
+    usage
+    exit 1
+end
+
+# Execute the appropriate command
+switch $action
+    case new
+        cmd_new $args
+    case list
+        cmd_list $args
+    case remove
+        cmd_remove $args
+    case '*'
+        die "Unknown action: $action"
+        usage
+        exit 1
+end

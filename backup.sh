@@ -2,8 +2,9 @@
 
 os="$(uname)"
 
+cp ~/.gitignore_global ~/.gitignore_global.bak
 cp ~/.shell.sh ~/.shell.sh.bak
-cp ~/.config/fish/config.fish ~/.config/fish/config.fish.bak 
+cp -R ~/.config/fish ~/.config/fish.bak 
 
 if [[ $os == "Darwin" ]]; then
   cp ~/.wezterm.lua ~/.wezterm.lua.bak 

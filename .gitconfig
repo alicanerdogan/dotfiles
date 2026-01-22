@@ -3,7 +3,10 @@
 	email = aerdogan07@gmail.com
 [core]
 	editor = nvim
+	excludesfile = ~/.gitignore_global
 [pull]
 	rebase = true
 [init]
 	defaultBranch = main
+[diff]
+  external = difft

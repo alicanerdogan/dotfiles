@@ -2,6 +2,8 @@
 
 os="$(uname)"
 
+cp .gitignore_global ~/.gitignore_global
+
 if [[ $os == "Darwin" ]]; then
   cp .shell.mac.sh ~/.shell.sh
   cp .alacritty.mac.toml ~/.alacritty.toml
@@ -12,7 +14,7 @@ elif [[ $os == "Linux" ]]; then
   cp .alacritty.linux.yml ~/.alacritty.yml
 fi
 
-cp .config/fish/config.fish ~/.config/fish/config.fish
+cp -r .config/fish/** ~/.config/fish
 cp .zshrc ~/.zshrc
 cp -r .config/nvim/** ~/.config/nvim
 cp -r .config/ghostty/** ~/.config/ghostty

@@ -81,8 +81,9 @@ function gswm --description "Switches to main branch"
 end
 
 function gh-pr-edit-body --description "Edit GitHub PR body interactively"
+    set -l pr_number $argv[1]
     set tempfile (mktemp).md
-    gh pr view --json -q .body >$tempfile && $EDITOR $tempfile && gh pr edit --body-file $tempfile
+    gh pr view $pr_number --json body -q .body >$tempfile && $EDITOR $tempfile && gh pr edit $pr_number --body-file $tempfile
     rm -f $tempfile
 end
 

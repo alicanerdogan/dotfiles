@@ -131,15 +131,15 @@ function cp_cow
 end
 
 # Get the list of untracked files to copy from git config. If no config is
-# found, return the default list
+# found, return the default list. Custom patterns are added to defaults.
 function get_untracked_files_pattern
     # Default file patterns
-    set default_patterns "\\.env|\\.envrc|\\.env\\.local|\\.mise\\.toml|\\.tool-versions|mise\\.toml|Cargo\\.lock"
+    set default_patterns "\\.env|\\.envrc|\\.env\\.local|\\.mise\\.toml|\\.tool-versions|mise\\.toml|Cargo\\.lock|\\.vscode"
 
     # Check if we have custom patterns in git config
     if git config --get-all worktree.untrackedfiles >/dev/null 2>&1
         set custom_patterns (git config --get-all worktree.untrackedfiles | tr '\n' '|' | sed 's/|$//')
-        echo "^($custom_patterns)\$"
+        echo "^($default_patterns|$custom_patterns)\$"
     else
         echo "^($default_patterns)\$"
     end
@@ -295,7 +295,7 @@ function cmd_new
     or return 1
 
     # Get repository name and parent directory for new naming convention
-    set repo_name (basename "$git_root")
+    set repo_name (basename "$git_root" | string replace -r '@.*$' '')
     set parent_dir (dirname "$git_root")
     set worktree_path "$parent_dir/$repo_name@$dirname"
 
@@ -381,7 +381,7 @@ function cmd_new
     printf "%bcreated worktree %s%b\n" "$GREEN" "$repo_name@$dirname" "$CLEAR"
 
     # Execute post-new hook if it exists
-    set post_new_hook ".vscode/__gitworktree_post_new"
+    set post_new_hook "$git_root/.vscode/__gitworktree_post_new"
     if test -f "$post_new_hook"
         warn "executing post-new hook: $post_new_hook"
         if test -x "$post_new_hook"

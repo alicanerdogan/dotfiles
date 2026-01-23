@@ -63,6 +63,9 @@ keybind = ctrl+f>ctrl+l=clear_screen
 # Reload ghostty config
 keybind = ctrl+f>ctrl+r=reload_config
 
+# Toggle zen mode to current split
+keybind = ctrl+f>enter=toggle_split_zoom
+
 # Copy mode
 keybind = ctrl+f>/=write_screen_file:paste
 

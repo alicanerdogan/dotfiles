@@ -184,7 +184,7 @@ function cmd_remove
     or return 1
 
     # Get repository name and parent directory
-    set repo_name (basename "$git_root")
+    set repo_name (basename "$git_root" | string replace -r '@.*$' '')
     set parent_dir (dirname "$git_root")
 
     # Convert branch name to directory name (replace slashes with underscores)

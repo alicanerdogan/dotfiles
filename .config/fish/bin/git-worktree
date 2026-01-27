@@ -105,6 +105,44 @@ function get_git_root
     end
 end
 
+# Get the main repository path (not a worktree)
+# This is critical for proper operation when working from within a worktree
+function get_main_repo
+    set any_git_root (get_git_root)
+    or return 1
+
+    # Use git worktree list to find the main repository
+    # The main worktree is always listed first
+    pushd "$any_git_root" >/dev/null 2>&1 || begin
+        die "Failed to access repository"
+        return 1
+    end
+
+    set main_repo (git worktree list --porcelain | grep "^worktree" | head -n 1 | string replace "worktree " "")
+    popd >/dev/null 2>&1
+
+    if test -z "$main_repo"
+        die "Failed to determine main repository"
+        return 1
+    end
+
+    echo "$main_repo"
+end
+
+# Get the base repository name without any @branch suffix
+# This handles cases where the main repo directory is named like "repo@main"
+# and we want to create worktrees as "repo@feature" not "repo@main@feature"
+function get_base_repo_name
+    set main_repo_path "$argv[1]"
+    set full_name (basename "$main_repo_path")
+
+    # Strip the last @something suffix if it exists
+    # autotermin@main -> autotermin
+    # my-app@stable -> my-app
+    # plain-repo -> plain-repo (no change)
+    echo "$full_name" | string replace -r '@[^@]*$' ''
+end
+
 # If at all possible, use copy-on-write to copy files. This is especially
 # important to allow us to copy node_modules directories efficiently
 #
@@ -147,11 +185,11 @@ end
 
 # List all worktrees for the current repository
 function cmd_list
-    set git_root (get_git_root)
+    set main_repo (get_main_repo)
     or return 1
 
-    # Change to the git root to run worktree list
-    pushd "$git_root" >/dev/null 2>&1 || begin
+    # Change to the main repo to run worktree list
+    pushd "$main_repo" >/dev/null 2>&1 || begin
         die "Failed to access repository"
         return 1
     end
@@ -180,25 +218,25 @@ function cmd_remove
         return 1
     end
 
-    set git_root (get_git_root)
+    set main_repo (get_main_repo)
     or return 1
 
-    # Get repository name and parent directory
-    set repo_name (basename "$git_root" | string replace -r '@.*$' '')
-    set parent_dir (dirname "$git_root")
+    # Get base repository name and parent directory
+    set base_name (get_base_repo_name "$main_repo")
+    set parent_dir (dirname "$main_repo")
 
     # Convert branch name to directory name (replace slashes with underscores)
     set dirname (string replace -a "/" "_" "$worktree_name")
-    set worktree_path "$parent_dir/$repo_name@$dirname"
+    set worktree_path "$parent_dir/$base_name@$dirname"
 
     # Check if worktree exists
     if not test -d "$worktree_path"
-        die "Worktree '$repo_name@$dirname' does not exist"
+        die "Worktree '$base_name@$dirname' does not exist"
         return 1
     end
 
-    # Change to the git root to run worktree remove
-    pushd "$git_root" >/dev/null 2>&1 || begin
+    # Change to the main repo to run worktree remove
+    pushd "$main_repo" >/dev/null 2>&1 || begin
         die "Failed to access repository"
         return 1
     end
@@ -207,20 +245,20 @@ function cmd_remove
     if test -n "$force_flag"
         if not git worktree remove $force_flag "$worktree_path"
             popd >/dev/null 2>&1
-            die "Failed to remove worktree '$repo_name@$dirname'"
+            die "Failed to remove worktree '$base_name@$dirname'"
             return 1
         end
     else
         if not git worktree remove "$worktree_path"
             popd >/dev/null 2>&1
-            die "Failed to remove worktree '$repo_name@$dirname'"
+            die "Failed to remove worktree '$base_name@$dirname'"
             echo "Tip: Use --force to remove worktrees with uncommitted changes"
             return 1
         end
     end
 
     popd >/dev/null 2>&1
-    printf "%bRemoved worktree %s%b\n" "$GREEN" "$repo_name@$dirname" "$CLEAR"
+    printf "%bRemoved worktree %s%b\n" "$GREEN" "$base_name@$dirname" "$CLEAR"
 end
 
 # Create a worktree from a given branchname, in exactly the way I like it.
@@ -288,20 +326,20 @@ function cmd_new
         set dirname (string replace -a "/" "_" "$branchname")
     end
 
-    # Find the git repository root and change to it; if you run this command
-    # from a directory within the repository this will make sure it still does
+    # Find the main repository and change to it; if you run this command
+    # from a worktree or subdirectory, this will make sure it still does
     # the right thing
-    set git_root (get_git_root)
+    set main_repo (get_main_repo)
     or return 1
 
-    # Get repository name and parent directory for new naming convention
-    set repo_name (basename "$git_root" | string replace -r '@.*$' '')
-    set parent_dir (dirname "$git_root")
-    set worktree_path "$parent_dir/$repo_name@$dirname"
+    # Get base repository name and parent directory for new naming convention
+    set base_name (get_base_repo_name "$main_repo")
+    set parent_dir (dirname "$main_repo")
+    set worktree_path "$parent_dir/$base_name@$dirname"
 
-    # Change to the git root directory
-    cd "$git_root" || begin
-        die "Failed to change to git root directory"
+    # Change to the main repo directory
+    cd "$main_repo" || begin
+        die "Failed to change to main repository directory"
         return 1
     end
 
@@ -371,17 +409,17 @@ function cmd_new
     cd "$worktree_path" || return
 
     # Initialize and update submodules if they exist
-    if test -f "$git_root/.gitmodules"
+    if test -f "$main_repo/.gitmodules"
         warn "initializing submodules"
         if not git submodule update --init --recursive
             warn "Failed to initialize submodules"
         end
     end
 
-    printf "%bcreated worktree %s%b\n" "$GREEN" "$repo_name@$dirname" "$CLEAR"
+    printf "%bcreated worktree %s%b\n" "$GREEN" "$base_name@$dirname" "$CLEAR"
 
     # Execute post-new hook if it exists
-    set post_new_hook "$git_root/.vscode/__gitworktree_post_new"
+    set post_new_hook "$main_repo/.vscode/__gitworktree_post_new"
     if test -f "$post_new_hook"
         warn "executing post-new hook: $post_new_hook"
         if test -x "$post_new_hook"

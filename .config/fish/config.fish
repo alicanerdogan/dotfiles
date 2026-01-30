@@ -88,6 +88,7 @@ function gh-pr-edit-body --description "Edit GitHub PR body interactively"
 end
 
 function pvim --description "Pick a project to open in vim"
+    set -l query $argv[1]
     set PROJECT_DIRS ~/src ~/repos ~/repos/sandbox
     # apply PROJECT_PRIORITY from global env
     set PROJECT_PRIORITY (string split ' ' $PROJECT_PRIORITY)
@@ -127,7 +128,7 @@ function pvim --description "Pick a project to open in vim"
         return 1
     end
 
-    set -l selected (printf '%s\n' $entries | fzf --height 40% --reverse --tiebreak=index --prompt "Open project: " --with-nth=2 --delimiter='\t')
+    set -l selected (printf '%s\n' $entries | fzf --height 40% --reverse --tiebreak=index --prompt "Open project: " --with-nth=2 --delimiter='\t' --query="$query")
 
     or return
 

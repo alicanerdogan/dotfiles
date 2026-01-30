@@ -1141,18 +1141,27 @@ local function set_up_nvim_only_plugins(plugins)
 
       require('mason').setup({})
       require('mason-lspconfig').setup({
-        ensure_installed = { 'lua_ls', 'ts_ls', 'jsonls', 'eslint', 'fish_lsp', },
+        ensure_installed = { 'lua_ls', 'tsgo', 'jsonls', 'eslint', 'fish_lsp', },
         automatic_enable = true,
       })
 
-      vim.lsp.config('ts_ls', {
-        handlers = {
-          ["textDocument/definition"] = function(err, result, ...)
-            vim.print("hello ts_ls definition")
-            vim.inspect(result)
-            result = vim.islist(result) and result[1] or result
-            return vim.lsp.handlers["textDocument/definition"](err, result, ...)
-          end,
+      vim.lsp.enable('ts_ls', false)
+      vim.lsp.config('tsgo', {
+        cmd = { 'tsgo', '--lsp', '--stdio' },
+        filetypes = {
+          'javascript',
+          'javascriptreact',
+          'javascript.jsx',
+          'typescript',
+          'typescriptreact',
+          'typescript.tsx',
+        },
+        root_markers = {
+          'tsconfig.json',
+          'jsconfig.json',
+          'package.json',
+          '.git',
+          'tsconfig.base.json',
         },
       })
 

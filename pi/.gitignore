@@ -1,0 +1,15 @@
+# pi runtime state (machine-local)
+sessions/
+auth.json
+models-store.json
+mcp-cache.json
+mcp-npx-cache.json
+trust.json
+.pi/
+git/
+npm/
+pi-config-HazAT/
+
+# workstation-specific config
+local/
+models.json

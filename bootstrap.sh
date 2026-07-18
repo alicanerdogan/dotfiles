@@ -26,3 +26,6 @@ if [[ $os == "Darwin" ]]; then
   # Mullvad
   # Vlc Player
 fi
+
+# pi coding agent: symlink this repo's pi/ as the live config
+./bootstrap.pi.sh

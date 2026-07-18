@@ -89,7 +89,7 @@ end
 
 function pvim --description "Pick a project to open in vim"
     set -l query $argv[1]
-    set PROJECT_DIRS ~/src ~/repos ~/repos/sandbox
+    set PROJECT_DIRS ~/src ~/repos ~/repos/sandbox ~/repos/xcode
     # apply PROJECT_PRIORITY from global env
     set PROJECT_PRIORITY (string split ' ' $PROJECT_PRIORITY)
     set -l priority_entries

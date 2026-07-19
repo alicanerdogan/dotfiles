@@ -16,7 +16,7 @@ function optimize --description "Optimizes videos and convert them to HD mp4 vid
     set filepath $argv[1]
     set filename $(basename "$filepath")
     set filename (string replace -r '\.[^.]*$' '' $filename)
-    ffmpeg -i $filepath -c:v libx264 -vf scale=-2:720 -crf 28 -preset veryslow -an "$filename.mp4"
+    ffmpeg -i $filepath -c:v libx264 -vf scale=-2:1080 -crf 28 -preset veryslow -an "$filename.mp4"
 end
 function git_current_branch --description "Outputs current git branch"
     git branch --show-current

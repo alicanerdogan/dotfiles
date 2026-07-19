@@ -87,48 +87,81 @@ function gh-pr-edit-body --description "Edit GitHub PR body interactively"
     rm -f $tempfile
 end
 
+function gh-pr-set-body --description "Set GitHub PR body from a markdown file"
+    argparse 'pr=' -- $argv
+    or return
+
+    set -l markdown_file $argv[1]
+
+    if test -z "$markdown_file"
+        echo "Usage: gh-pr-set-body <markdown-file> [--pr <number>]"
+        return 1
+    end
+
+    if not test -f "$markdown_file"
+        echo "File not found: $markdown_file"
+        return 1
+    end
+
+    set -l pr_number $_flag_pr
+    if test -z "$pr_number"
+        set pr_number (gh pr list --head (git_current_branch) --json number -q '.[0].number')
+        if test -z "$pr_number"
+            echo "No PR found for current branch"
+            return 1
+        end
+    end
+
+    gh pr edit $pr_number --body-file "$markdown_file"
+end
+
 function pvim --description "Pick a project to open in vim"
     set -l query $argv[1]
     set PROJECT_DIRS ~/src ~/repos ~/repos/sandbox ~/repos/xcode
     # apply PROJECT_PRIORITY from global env
     set PROJECT_PRIORITY (string split ' ' $PROJECT_PRIORITY)
-    set -l priority_entries
-    set -l normal_entries
 
+    # Filter to existing dirs for fd
+    set -l existing_dirs
     for base in $PROJECT_DIRS
         if test -d "$base"
-            set -l base_name (basename "$base")
-            for dir in $base/*/
-                if test -d "$dir"
-                    set -l proj_name (basename "$dir")
-                    set -l entry "$dir"\t"$proj_name [$base_name]"
-                    set -l is_priority false
-
-                    for pattern in $PROJECT_PRIORITY
-                        if string match -rq "$pattern" "$proj_name"
-                            set is_priority true
-                            break
-                        end
-                    end
-
-                    if test "$is_priority" = true
-                        set -a priority_entries "$entry"
-                    else
-                        set -a normal_entries "$entry"
-                    end
-                end
-            end
+            set -a existing_dirs "$base"
         end
     end
 
-    set -l entries $priority_entries $normal_entries
-
-    if test (count $entries) -eq 0
-        echo "No projects found in: $PROJECT_DIRS"
+    if test (count $existing_dirs) -eq 0
+        echo "No project directories found: $PROJECT_DIRS"
         return 1
     end
 
-    set -l selected (printf '%s\n' $entries | fzf --height 40% --reverse --tiebreak=index --prompt "Open project: " --with-nth=2 --delimiter='\t' --query="$query")
+    # Priority entries stream to fzf immediately; non-priority buffered to
+    # a temp file and appended after the scan, so they appear after priority
+    # entries (fzf --tiebreak=index keeps that order).
+    set -l normal_file (mktemp)
+
+    set -l selected (begin
+        fd --type d --min-depth 1 --max-depth 1 . $existing_dirs | while read -l dir
+            set -l proj_name (basename "$dir")
+            set -l parent (basename (dirname "$dir"))
+            set -l entry "$dir"\t"$proj_name [$parent]"
+
+            set -l is_priority false
+            for pattern in $PROJECT_PRIORITY
+                if string match -rq "$pattern" "$proj_name"
+                    set is_priority true
+                    break
+                end
+            end
+
+            if test "$is_priority" = true
+                echo "$entry"
+            else
+                echo "$entry" >>$normal_file
+            end
+        end
+        cat $normal_file
+        rm -f $normal_file
+    end | fzf --height 40% --reverse --tiebreak=index --prompt "Open project: " --with-nth=2 --delimiter='\t' --query="$query")
 
     or return
 

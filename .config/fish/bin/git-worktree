@@ -26,18 +26,14 @@ Options:
 
 Examples:
     worktree new feature-branch
-    worktree new someuser:feature-branch    # Create from a fork
     worktree list
     worktree remove feature-branch
     worktree remove --force feature-branch
     worktree --repo /path/to/repo new feature-branch
 
 Creating worktrees:
-    Create a git worktree with <branch name>. Will create a worktree if one isn't
-    found that matches the given name.
-
-    To create a worktree from a github fork, use the format username:branchname:
-        worktree new someuser:feature-branch
+    Create a git worktree with a new branch from HEAD. Will error if the
+    branch already exists locally.
 
     Will copy over some untracked files to the new worktree. By default, this includes
     .env, .envrc, .env.local, .tool-versions, and mise.toml files.
@@ -176,7 +172,7 @@ function get_untracked_files_pattern
 
     # Check if we have custom patterns in git config
     if git config --get-all worktree.untrackedfiles >/dev/null 2>&1
-        set custom_patterns (git config --get-all worktree.untrackedfiles | tr '\n' '|' | sed 's/|$//')
+        set custom_patterns (git config --get-all worktree.untrackedfiles | string join '|')
         echo "^($default_patterns|$custom_patterns)\$"
     else
         echo "^($default_patterns)\$"
@@ -275,56 +271,8 @@ function cmd_new
 
     set branchname "$argv[1]"
 
-    # if the branch is of the form user:branch, assume that is a fork 'branch'
-    # of the current repository at github.com/user/<repo_name>
-    if string match -q "*:*" "$branchname"
-        set username (string split -m 1 ":" "$branchname")[1]
-        set branchname (string split -m 1 ":" "$branchname")[2]
-        set remote "$username"
-
-        # Check if remote exists
-        if not git remote get-url "$remote" >/dev/null 2>&1
-            # Get the origin URL and construct the fork URL
-            set origin_url (git remote get-url origin)
-
-            # Handle both SSH and HTTPS URLs
-            if string match -q "git@github.com:*" "$origin_url"
-                # SSH format: git@github.com:owner/repo.git
-                set repo_name (string split "/" "$origin_url")[-1]
-                set fork_url "git@github.com:$username/$repo_name"
-            else if string match -q "https://github.com/*" "$origin_url"
-                # HTTPS format: https://github.com/owner/repo.git
-                set repo_name (string split "/" "$origin_url")[-1]
-                set fork_url "https://github.com/$username/$repo_name"
-            else
-                die "Unable to determine fork URL from origin: $origin_url"
-                return 1
-            end
-
-            warn "Adding remote '$remote' for $fork_url"
-            if not git remote add "$remote" "$fork_url"
-                die "Failed to add remote '$remote'"
-                return 1
-            end
-        end
-
-        # Fetch from the remote
-        warn "Fetching from remote '$remote'"
-        if not git fetch "$remote"
-            die "Failed to fetch from remote '$remote'"
-            return 1
-        end
-
-        # Update the dirname to include the username prefix, and replace
-        # slashes with underscores
-        set dirname (string replace -a "/" "_" "$username"_"$branchname")
-    else
-        set remote origin
-        # Replace slashes with underscores. If there's no slash, dirname will equal
-        # branchname. So "alu/something-other" becomes "alu_something-other", but
-        # "quick-fix" stays unchanged
-        set dirname (string replace -a "/" "_" "$branchname")
-    end
+    # Replace colons and slashes with underscores for directory naming
+    set dirname (string replace -a "/" "_" (string replace -a ":" "_" "$branchname"))
 
     # Find the main repository and change to it; if you run this command
     # from a worktree or subdirectory, this will make sure it still does
@@ -343,42 +291,16 @@ function cmd_new
         return 1
     end
 
-    # pull the most recent version of the remote
-    if not git pull
-        warn "Unable to run git pull, there may not be an upstream"
+    # Error if the branch already exists locally
+    if git for-each-ref --format='%(refname:lstrip=2)' refs/heads | grep -E "^$branchname\$" >/dev/null 2>&1
+        die "Branch '$branchname' already exists"
+        return 1
     end
 
-    # if the branch name already exists, we want to check it out. Otherwise,
-    # create a new branch. I'm sure there's probably a way to do that in one
-    # command, but I'm done fiddling with git at this point
-    #
-    # As far as I can tell, we have to check locally and remotely separately if
-    # we want to be accurate. See https://stackoverflow.com/a/75040377 for the
-    # reasoning here. Also this has some caveats, but probably works well
-    # enough :shrug:
-    #
-    # if the branch exists locally:
-    if git for-each-ref --format='%(refname:lstrip=2)' refs/heads | grep -E "^$branchname\$" >/dev/null 2>&1
-        if not git worktree add "$worktree_path" "$branchname"
-            die "failed to create git worktree $branchname"
-            return 1
-        end
-        # if the branch exists on a remote:
-    else if git for-each-ref --format='%(refname:lstrip=3)' "refs/remotes/$remote" | grep -E "^$branchname\$" >/dev/null 2>&1
-        # create a local worktree tracking the remote branch
-        if not git worktree add -b "$branchname" "$worktree_path" "$remote/$branchname"
-            die "failed to create git worktree $remote/$branchname"
-            return 1
-        end
-    else
-        # otherwise, create a new branch
-        if test "$remote" != origin
-            warn "Branch $remote/$branchname not found, creating new local branch"
-        end
-        if not git worktree add -b "$branchname" "$worktree_path"
-            die "failed to create git worktree $branchname"
-            return 1
-        end
+    # Create a new branch
+    if not git worktree add -b "$branchname" "$worktree_path"
+        die "failed to create git worktree $branchname"
+        return 1
     end
 
     # Find untracked files that we want to copy to the new worktree

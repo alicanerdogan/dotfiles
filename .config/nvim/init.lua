@@ -465,9 +465,6 @@ local function set_up_nvim_only_config()
   })
 end
 
-local function set_up_vscode_config()
-end
-
 local function set_up_config()
   local user = get_user_module()
 
@@ -475,17 +472,10 @@ local function set_up_config()
   if user ~= nil then
     user.set_up_global_config()
   end
-  if vim.g.vscode then
-    set_up_vscode_config()
-    if user ~= nil then
-      user.set_up_vscode_config()
-    end
-  else
-    if user ~= nil then
-      user.set_up_nvim_only_config()
-    end
-    set_up_nvim_only_config()
+  if user ~= nil then
+    user.set_up_nvim_only_config()
   end
+  set_up_nvim_only_config()
 end
 
 ---------------------
@@ -816,6 +806,7 @@ local function set_up_nvim_only_plugins(plugins)
   table.insert(plugins, {
     "nvim-neo-tree/neo-tree.nvim",
     branch = "v3.x",
+    lazy = false,
     dependencies = {
       "nvim-lua/plenary.nvim",
       "nvim-tree/nvim-web-devicons",
@@ -960,13 +951,17 @@ local function set_up_nvim_only_plugins(plugins)
 
   table.insert(plugins, {
     'nvim-treesitter/nvim-treesitter',
+    branch = "main",
     dependencies = {
-      'nvim-treesitter/nvim-treesitter-textobjects',
+      {
+        'nvim-treesitter/nvim-treesitter-textobjects',
+        branch = 'main',
+      },
       'windwp/nvim-ts-autotag',
     },
     build = ":TSUpdate",
     config = function()
-      require('nvim-treesitter.configs').setup({
+      require('nvim-treesitter').setup({
         ensure_installed = {
           'lua',
           'vimdoc',
@@ -1141,11 +1136,10 @@ local function set_up_nvim_only_plugins(plugins)
 
       require('mason').setup({})
       require('mason-lspconfig').setup({
-        ensure_installed = { 'lua_ls', 'tsgo', 'jsonls', 'eslint', 'fish_lsp', },
+        ensure_installed = { 'lua_ls', 'tsgo', 'jsonls', 'eslint', 'fish_lsp', 'svelte', },
         automatic_enable = true,
       })
 
-      vim.lsp.enable('ts_ls', false)
       vim.lsp.config('tsgo', {
         cmd = { 'tsgo', '--lsp', '--stdio' },
         filetypes = {
@@ -1244,6 +1238,14 @@ local function set_up_nvim_only_plugins(plugins)
         end
       end
 
+      local gofmt = function()
+        return {
+          exe = 'gofmt',
+          args = {},
+          stdin = true,
+        }
+      end
+
       local settings = {}
       if formatter ~= nil then
         settings = {
@@ -1257,9 +1259,12 @@ local function set_up_nvim_only_plugins(plugins)
           markdown = { formatter },
           json = { formatter },
           jsonc = { formatter },
+          svelte = { formatter },
           sql = { sql_formatter },
         }
       end
+
+      settings.go = { gofmt }
 
       format.setup {
         logging = false,
@@ -1271,7 +1276,7 @@ local function set_up_nvim_only_plugins(plugins)
         [[
       augroup FormatAutogroup
         autocmd!
-        autocmd BufWritePost *.js,*.jsx,*.ts,*.tsx,*.html,*css,*json,*.jsonc,*.md FormatWrite
+        autocmd BufWritePost *.js,*.jsx,*.ts,*.tsx,*.go,*.html,*css,*json,*.jsonc,*.md FormatWrite
       augroup END
       ]],
         true
@@ -1414,6 +1419,7 @@ local function set_up_nvim_only_plugins(plugins)
 
   table.insert(plugins, {
     "github/copilot.vim",
+    enabled = false,
     config = function()
       vim.g.copilot_no_tap_map = true
       vim.g.copilot_assume_mapped = true
@@ -1423,6 +1429,7 @@ local function set_up_nvim_only_plugins(plugins)
         ["javascriptreact"] = true,
         ["typescript"] = true,
         ["typescriptreact"] = true,
+        ["svelte"] = true,
         ["lua"] = true,
         ["rust"] = true,
         ["c"] = true,
@@ -1450,148 +1457,6 @@ local function set_up_nvim_only_plugins(plugins)
       vim.api.nvim_set_keymap("i", "<C-K>", 'copilot#Next()', { silent = true, expr = true })
       vim.keymap.set("i", "<C-H>", "<cmd>:Copilot<CR>", { silent = true, desc = "Copilot Panel" })
     end,
-  })
-
-  table.insert(plugins, {
-    "CopilotC-Nvim/CopilotChat.nvim",
-    dependencies = {
-      { "github/copilot.vim" },
-      { "nvim-lua/plenary.nvim", branch = "master" },
-    },
-    build = "make tiktoken",
-    config = function()
-      local chat = require("CopilotChat")
-      chat.setup {
-        model = 'gpt-4o',
-        agent = 'copilot',
-        temperature = 0.1,
-        -- default window options
-        window = {
-          layout = 'vertical',     -- 'vertical', 'horizontal', 'float'
-        },
-        show_folds = true,         -- Shows folds for sections in chat
-        auto_follow_cursor = true, -- Auto-follow cursor in chat
-        chat_autocomplete = true,
-        history_path = vim.fn.stdpath('data') .. '/copilotchat_history',
-        clear_chat_on_new_prompt = false, -- Clears chat on every new prompt
-        name = 'CopilotChat',             -- Name to use in chat
-        separator = '---',                -- Separator to use in chat
-        -- default mappings
-        mappings = {
-          complete = {
-            detail = 'Use @<Tab> or /<Tab> for options.',
-            insert = '<Tab>',
-          },
-          close = {
-            normal = 'q',
-          },
-          reset = {
-            normal = '<C-x>',
-          },
-          submit_prompt = {
-            normal = '<CR>',
-          },
-          accept_diff = {
-            normal = '<C-y>',
-          },
-          show_diff = {
-            normal = '<C-d>',
-          },
-        },
-        contexts = {
-          git_pr_template = {
-            resolve = function()
-              local cmd = "cat .github/PULL_REQUEST_TEMPLATE.md"
-              local pr_template = table.concat(vim.fn.systemlist(cmd), "\n")
-
-              return {
-                {
-                  content = pr_template,
-                  filename = "PULL_REQUEST_TEMPLATE.md",
-                  filetype = "markdown",
-                }
-              }
-            end,
-          },
-          git_main_diff = {
-            resolve = function()
-              local cmd = 'git diff --no-ext-diff origin/' .. git_main_branch() .. '..HEAD'
-              local diff = table.concat(vim.fn.systemlist(cmd), "\n")
-
-              return {
-                {
-                  content = diff,
-                  filename = "main.diff",
-                  filetype = "diff",
-                }
-              }
-            end,
-          },
-          jira_current_task = {
-            resolve = function()
-              local cmd = ('echo $(git branch --show-current) | sed "s/^\\([^-]*-[^-]*\\).*/\\1/"')
-              local current_task = vim.fn.system(cmd)
-              current_task = current_task:gsub("^%s*(.-)%s*$", "%1")
-
-              return {
-                {
-                  content = current_task,
-                  filename = "jira_current_task",
-                  filetype = "text",
-
-                }
-              }
-            end,
-          },
-          git_branch = {
-            resolve = function()
-              local cmd = "git branch --show-current"
-              local current_branch = vim.fn.system(cmd)
-              current_branch = current_branch:gsub("^%s*(.-)%s*$", "%1")
-
-              return {
-                {
-                  content = current_branch,
-                  filename = 'git_branch',
-                  filetype = 'text',
-                }
-              }
-            end,
-          },
-        },
-      }
-
-      vim.api.nvim_create_user_command('CopilotChatGeneratePR',
-        function()
-          local cmd = {
-            "Pull request template that is used in this repository:",
-            "#git_pr_template",
-            "Diff with the main branch:",
-            "#git_main_diff",
-            "Name of the current JIRA task (it can be used to replace TICKET_NUM inside the template:",
-            "#jira_current_task",
-            "Could you generate me a markdown file for this branch and fill the pull request template with the context I provided?",
-            "You can remove the comments in the template except for the screenshots section."
-          }
-          chat.open()
-          chat.reset()
-          chat.ask(table.concat(cmd, "\n"))
-        end,
-        { nargs = 0 })
-      vim.keymap.set('n', '<leader>aa', '<cmd>:CopilotChatOpen<CR>',
-        { desc = "Copilot Chat - Open", silent = true })
-      vim.keymap.set('v', '<leader>ae', '<cmd>:CopilotChatExplain<CR>',
-        { desc = "Copilot Chat - Explain", silent = true })
-      vim.keymap.set('v', '<leader>ar', '<cmd>:CopilotChatReview<CR>',
-        { desc = "Copilot Chat - Review", silent = true })
-      vim.keymap.set('v', '<leader>af', '<cmd>:CopilotChatFix<CR>', { desc = "Copilot Chat - Fix", silent = true })
-      vim.keymap.set('v', '<leader>ad', '<cmd>:CopilotChatDocs<CR>', { desc = "Copilot Chat - Docs", silent = true })
-      vim.keymap.set('v', '<leader>ao', '<cmd>:CopilotChatOptimize<CR>',
-        { desc = "Copilot Chat - Optimize", silent = true })
-      vim.keymap.set('n', '<leader>ac', '<cmd>:CopilotChatCommit<CR>', { desc = "Copilot Chat - Commit", silent = true })
-      vim.keymap.set('n', '<leader>as', '<cmd>:CopilotChatCommitStaged<CR>',
-        { desc = "Copilot Chat - Commit Staged", silent = true })
-    end
   })
 
   table.insert(plugins, {
@@ -1629,85 +1494,6 @@ local function set_up_nvim_only_plugins(plugins)
   })
 end
 
-local function set_up_vscode_plugins(plugins)
-  table.insert(plugins, {
-    'nvim-treesitter/nvim-treesitter',
-    dependencies = {
-      'nvim-treesitter/nvim-treesitter-textobjects',
-    },
-    build = ":TSUpdate",
-    config = function()
-      require('nvim-treesitter.configs').setup({
-        ensure_installed = {
-          'bash',
-          'markdown',
-          'markdown_inline',
-          'javascript',
-          'typescript',
-        },
-        indent = { enable = true },
-        incremental_selection = {
-          enable = true,
-          keymaps = {
-            -- init_selection = "<space>", -- maps in normal mode to init the node/scope selection with space
-            -- node_incremental = "<space>", -- increment to the upper named parent
-            -- node_decremental = "<bs>", -- decrement to the previous node
-            -- scope_incremental = "<tab>", -- increment to the upper scope (as defined in locals.scm)
-          },
-        },
-        autopairs = {
-          enable = true,
-        },
-        highlight = {
-          enable = false,
-        },
-        textobjects = {
-          select = {
-            enable = true,
-            lookahead = true, -- Automatically jump forward to textobj, similar to targets.vim
-            keymaps = {
-              -- You can use the capture groups defined in textobjects.scm
-              ['aa'] = '@parameter.outer',
-              ['ia'] = '@parameter.inner',
-              ['af'] = '@function.outer',
-              ['if'] = '@function.inner',
-              ['ac'] = '@class.outer',
-              ['ic'] = '@class.inner',
-              ["iB"] = "@block.inner",
-              ["aB"] = "@block.outer",
-            },
-          },
-          move = {
-            enable = true,
-            set_jumps = true, -- whether to set jumps in the jumplist
-            goto_next_start = {
-              [']]'] = '@function.outer',
-            },
-            goto_next_end = {
-              [']['] = '@function.outer',
-            },
-            goto_previous_start = {
-              ['[['] = '@function.outer',
-            },
-            goto_previous_end = {
-              ['[]'] = '@function.outer',
-            },
-          },
-          swap = {
-            enable = true,
-            swap_next = {
-              ['<leader>sn'] = '@parameter.inner',
-            },
-            swap_previous = {
-              ['<leader>sp'] = '@parameter.inner',
-            },
-          },
-        },
-      })
-    end,
-  })
-end
-
 local function set_up_plugins()
   local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
   if not vim.loop.fs_stat(lazypath) then
@@ -1732,16 +1518,9 @@ local function set_up_plugins()
     user.set_up_global_plugins(plugins)
   end
 
-  if vim.g.vscode then
-    set_up_vscode_plugins(plugins)
-    if user ~= nil then
-      user.set_up_vscode_plugins(plugins)
-    end
-  else
-    set_up_nvim_only_plugins(plugins)
-    if user ~= nil then
-      user.set_up_nvim_only_plugins(plugins)
-    end
+  set_up_nvim_only_plugins(plugins)
+  if user ~= nil then
+    user.set_up_nvim_only_plugins(plugins)
   end
 
   require("lazy").setup(plugins)
@@ -1841,36 +1620,6 @@ local function set_up_nvim_only_keybindings()
   vim.keymap.set('c', '<M-BS>', '<C-w>', { noremap = true, desc = "Delete previous word" })
 end
 
-local function set_up_vscode_keybindings()
-  vim.keymap.set('n', '<leader>g', "<Cmd>call VSCodeNotify('workbench.view.scm')<CR>")
-  vim.keymap.set('n', '<leader>b', "<Cmd>call VSCodeNotify('workbench.action.toggleSidebarVisibility')<CR>")
-  vim.keymap.set('n', '<leader>r', "<Cmd>call VSCodeNotify('workbench.action.openRecent')<CR>")
-  -- Go to next warning/error/info
-  vim.keymap.set('n', '<leader>m', "<Cmd>call VSCodeNotify('editor.action.marker.next')<CR>")
-  -- Go to prev warning/error/info
-  vim.keymap.set('n', '<leader>M', "<Cmd>call VSCodeNotify('editor.action.marker.prev')<CR>")
-  -- Commit staged changes
-  vim.keymap.set('n', '<leader>C', "<Cmd>call VSCodeNotify('git.commitStaged')<CR>")
-  -- Stage changes in the file
-  vim.keymap.set('n', '<leader>s', "<Cmd>call VSCodeNotify('git.stage')<CR>")
-  -- Diff all changes
-  vim.keymap.set('n', '<leader>D', "<Cmd>call VSCodeNotify('gitlens.externalDiffAll')<CR>")
-  -- Go to next change in the file
-  vim.keymap.set('n', '<leader>d', "<Cmd>call VSCodeNotify('workbench.action.editor.nextChange')<CR>")
-  -- Go to previour change in the file
-  -- vim.keymap.set('n', '<leader>f', "<Cmd>call VSCodeNotify('workbench.action.editor.previousChange')<CR>")
-  -- Search in files
-  vim.keymap.set('n', '<leader>ff', "<Cmd>call VSCodeNotify('search.action.openNewEditorToSide')<CR>")
-  -- Focuses on the search results
-  vim.keymap.set('n', '<leader>fn', "<Cmd>call VSCodeNotify('search.action.focusNextSearchResult')<CR>")
-  -- Focuses on the search input
-  vim.keymap.set('n', '<leader>fi', "<Cmd>call VSCodeNotify('search.action.focusQueryEditorWidget')<CR>")
-  -- Focuses on the include input
-  vim.keymap.set('n', '<leader>fc', "<Cmd>call VSCodeNotify('search.action.focusFilesToInclude')<CR>")
-  -- Focuses on the exclude input
-  vim.keymap.set('n', '<leader>fe', "<Cmd>call VSCodeNotify('search.action.focusFilesToExclude')<CR>")
-end
-
 local function set_up_keybindings()
   local user = get_user_module()
 
@@ -1878,16 +1627,9 @@ local function set_up_keybindings()
   if user ~= nil then
     user.set_up_global_keybindings()
   end
-  if vim.g.vscode then
-    set_up_vscode_keybindings()
-    if user ~= nil then
-      user.set_up_vscode_keybindings()
-    end
-  else
-    set_up_nvim_only_keybindings()
-    if user ~= nil then
-      user.set_up_nvim_only_keybindings()
-    end
+  set_up_nvim_only_keybindings()
+  if user ~= nil then
+    user.set_up_nvim_only_keybindings()
   end
 end
 

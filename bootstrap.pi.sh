@@ -28,7 +28,7 @@ elif [[ -e "$agent" ]]; then
   mv "$agent" "$agent_bak"
 
   # backup wins on conflicts; review the result afterwards with git diff
-  rsync -a "$agent_bak/" "$pi_dir/"
+  rsync -a --exclude='.git' --exclude='.gitignore' "$agent_bak/" "$pi_dir/"
 
   ln -s "$pi_dir" "$agent"
 else

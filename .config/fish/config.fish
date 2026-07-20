@@ -141,8 +141,8 @@ function pvim --description "Pick a project to open in vim"
 
     set -l selected (begin
         fd --type d --min-depth 1 --max-depth 1 . $existing_dirs | while read -l dir
-            set -l proj_name (basename "$dir")
-            set -l parent (basename (dirname "$dir"))
+            set -l proj_name (path basename "$dir")
+            set -l parent (path basename (path dirname "$dir"))
             set -l entry "$dir"\t"$proj_name [$parent]"
 
             set -l is_priority false
@@ -235,6 +235,7 @@ function set_env_vars
     set -x PATH $HOMEBREW_DIR/bin $PATH
     set -x PATH $HOMEBREW_DIR/opt/openjdk/bin $PATH
     set -x PATH "$HOME/.cargo/bin" $PATH
+    set -x PATH $HOMEBREW_DIR/opt/rustup/bin $PATH
     set -x PATH "$HOME/.config/fish/bin" $PATH
 
     # pnpm

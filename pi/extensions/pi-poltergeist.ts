@@ -120,6 +120,11 @@ export default function (pi: ExtensionAPI) {
       if (worktree) merged.set(WORKTREE_PARAM, worktree);
 
       const isFork = workflow === FORK_WORKFLOW;
+
+      // geist treats each argv element after `--` as a separate panel's command
+      // and shell-splits it internally, so a multi-token command must be passed
+      // as a single, properly shell-quoted string (else one panel per token).
+      const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
       let sourceSession: string | undefined;
       if (isFork) {
         sourceSession = ctx.sessionManager.getSessionFile() ?? undefined;
@@ -148,7 +153,9 @@ export default function (pi: ExtensionAPI) {
       }
 
       // fork workflow fallback: single-pane tab if the workflow isn't defined.
-      if (isFork && result.stderr.includes(`workflow '${FORK_WORKFLOW}' not found`)) {
+      // geist writes `error:` lines to stdout, so inspect both streams.
+      const combinedOut = `${result.stdout}\n${result.stderr}`;
+      if (isFork && combinedOut.includes(`workflow '${FORK_WORKFLOW}' not found`)) {
         const name = merged.get(NAME_PARAM);
         if (!name) {
           ctx.ui.setStatus("geist", undefined);
@@ -163,11 +170,7 @@ export default function (pi: ExtensionAPI) {
           "--name",
           name,
           "--",
-          "pi",
-          "--fork",
-          sourceSession!,
-          "--name",
-          name,
+          `pi --fork ${shellQuote(sourceSession!)} --name ${shellQuote(name)}`,
         ];
         const fr = await pi.exec(bin, fallbackArgs, { timeout: 30_000, cwd: ctx.cwd });
         ctx.ui.setStatus("geist", undefined);
@@ -175,12 +178,12 @@ export default function (pi: ExtensionAPI) {
           ctx.ui.notify(`Forked "${name}" into a new tab (single pane)`, "info");
           return;
         }
-        ctx.ui.notify(`geist up failed: ${fr.stderr.trim()}`, "error");
+        ctx.ui.notify(`geist up failed: ${fr.stdout.trim() || fr.stderr.trim()}`, "error");
         return;
       }
 
       ctx.ui.setStatus("geist", undefined);
-      ctx.ui.notify(`geist ${workflow} failed: ${result.stderr.trim()}`, "error");
+      ctx.ui.notify(`geist ${workflow} failed: ${result.stdout.trim() || result.stderr.trim()}`, "error");
     },
   });
 }

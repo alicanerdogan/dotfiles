@@ -530,7 +530,7 @@ local function set_up_nvim_only_plugins(plugins)
       end
       require("lualine").setup({
         options = {
-          disabled_filetypes = { 'neo-tree', 'lazygit' },
+          disabled_filetypes = { 'neo-tree', 'lazygit', 'hunk-diff' },
         },
         sections = {
           lualine_c = {

@@ -1059,6 +1059,33 @@ local function set_up_nvim_only_plugins(plugins)
         },
       })
 
+      -- Syntax-tree selection with LSP fallback
+      local function ts_select(action)
+        local has_parser = pcall(vim.treesitter.get_parser, vim.api.nvim_get_current_buf())
+        if has_parser then
+          pcall(function()
+            if action == "previous" then
+              vim.treesitter._select.previous_node()
+            elseif action == "next" then
+              vim.treesitter._select.next_node()
+            elseif action == "expand" then
+              vim.treesitter._select.expand()
+            elseif action == "shrink" then
+              vim.treesitter._select.shrink()
+            end
+          end)
+        else
+          if action == "expand" then
+            vim.lsp.buf.selection_range()
+          end
+        end
+      end
+
+      vim.keymap.set('x', '<leader>np', function() ts_select("previous") end, { desc = "Select previous syntax node" })
+      vim.keymap.set('x', '<leader>nn', function() ts_select("next") end, { desc = "Select next syntax node" })
+      vim.keymap.set({ 'x', 'o' }, '<leader>ne', function() ts_select("expand") end, { desc = "Expand to parent node" })
+      vim.keymap.set({ 'x', 'o' }, '<leader>nd', function() ts_select("shrink") end, { desc = "Shrink to child node" })
+
       vim.filetype.add({
         extension = { mdx = "markdown" },
       })
@@ -1156,6 +1183,14 @@ local function set_up_nvim_only_plugins(plugins)
           'package.json',
           '.git',
           'tsconfig.base.json',
+        },
+        handlers = {
+          ['textDocument/definition'] = function(err, result, ctx, config)
+            if result and #result > 0 then
+              result = { result[1] }
+            end
+            vim.lsp.handlers['textDocument/definition'](err, result, ctx, config)
+          end,
         },
       })
 

@@ -200,10 +200,9 @@ async function moveSkill(skill: SkillLite, list: "allow" | "deny", projectRoot: 
     const filePath = policyPath(projectRoot, file);
     let content = "";
     try { content = await fsp.readFile(filePath, "utf8"); } catch { /* nonexistent */ }
-    const kept = content.split(/\r?\n/).filter(keepLine);
+    const kept = content.split(/\r?\n/).filter(keepLine).filter((l) => l.trim() !== "");
     if (appendCanonical) {
-      if (kept.length > 0 && kept[kept.length - 1].trim() !== "") kept.push("");
-      kept.push(skill.name);
+      kept.push(skill.filePath);
     }
     const body = kept.join("\n").replace(/\s+$/, "") + "\n"; // single trailing newline
     await fsp.writeFile(filePath, body, "utf8");

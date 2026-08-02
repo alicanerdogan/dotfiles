@@ -1,0 +1,91 @@
+# pi-immunity — implementation TODOs
+
+```
+- [x] [P0] Spike: verify tree-sitter-bash parse contract — DONE 2025-08-02, see pi/extensions/immunity/spikes/tree-sitter-bash/README.md
+  - [x] [P0] Confirm grammar produces useful ASTs for target commands (rm -rf variants, curl | sh, redirects, quoting) — all 16 fixtures verified
+  - [x] [P0] Verify exact parse-to-stdout flags + grammar loading against the installed CLI version — `-l <dylib>` fast path (6 ms), `-p <grammar-dir>` fallback (1 s, implies rebuild); CLI 0.26.11
+  - [x] [P0] Spike test: parse a fixture set of target commands and assert expected AST shapes (node:test, runnable) — spike.test.ts, 16/16 pass
+  - [x] [P0] Document verified invocation in README; otherwise commit to word-based fallback path — committed to tree-sitter path; README documents invocation, output contract, degradation inputs
+- [x] [P0] Spike: verify headless pi subprocess contract — DONE 2025-08-02, see pi/extensions/immunity/spikes/pi-subprocess/README.md
+  - [x] [P0] --mode json + --no-extensions + --extension + --tools allowlist + --system-prompt — all flags confirmed against `pi --help`; live runs exit 0, single-tool allowlist holds
+  - [x] [P0] Confirm tool_execution_end event shape; verdict round-trips through tool result — shape verified exactly as designed (`result.content[0].text`); termination sequence `turn_end`→`agent_end`→`agent_settled`; inconclusive = absence detection (models ignore “don’t call tools”)
+  - [x] [P0] Semi-automated verdict test: run the subprocess over sample commands (benign + risky), assert schema-valid verdicts and correct outcomes — verdict-spike.integration.ts (opt-in `IMMUNITY_LLM=1`), 6/6 pass live
+- [x] [P0] tree-sitter AST layer — DONE 2025-08-02 (bridge + matchers + degradation)
+  - [x] [P1] Parse bridge: spawn CLI, temp-file parse, S-expr walk — tree-sitter.ts (lib fast path → grammar fallback → word fallback; temp files cleaned per parse; repo-local tempDir for tests)
+  - [x] [P1] Structural matchers over AST nodes (shared code with word-based matchers) — matchers.ts; both model paths feed matchBuiltins; 60/60 tests pass
+  - [x] [P1] Degradation: missing CLI/grammar → word-based fallback + warning notify (every time, not once per session) — analyzeCommand notify callback fires per event; tested
+  - [x] [P1] AST walker descends into lists/compound statements — `&&`/`||`/`;` chains and if/while/for/case/subshell bodies are walked; stages carry the separating operator (`sep: | && || ;`), so `echo x && rm -rf /bin` is caught while `curl x && sh` is NOT mistaken for a pipe
+  - [x] [P1] Word fallback is a simple net (resolved trade-off) — splits on `|` only (+ `||` as list sep), quote-blind, misses `&&`/`;`/compounds by design; AST owns structure, degraded mode warns; locked by the “word fallback limits” test suite
+  - [x] [P1] Built-in severity mapping (v1) — deny = irreversible (disk-format, dd-disk, redirect-disk, redirect-ssh-keys), prompt = destructive/privileged (rm-force, sudo, chmod-recursive, curl-pipe-shell); tunable via config later
+  - [x] [P1] Obfuscation boundary (resolved) — deterministic layer does NOT chase wrappers (`sh -c "…"`, eval, …): the LLM verdict layer sees the raw command text and owns that class; per-user coverage via commands.patterns/autoDenyPatterns config, not built-in arms races
+- [x] [P0] LLM verdict layer — DONE 2025-08-02 (client + capture + timeout; live-verified)
+  - [x] [P1] Analysis subprocess extension: immunity_verdict tool (typebox schema, risk/outcome/reason) — promoted from spike 2 to subprocess/analysis-tool.ts (subdir so main-session discovery stays inert; discovery loads only extensions/*.ts and */index.ts)
+  - [x] [P1] Subprocess client: spawn args, provider/model/append-system-prompt, piPath override — llm-client.ts; buildArgs() = spike-verified flag set verbatim; spawn injectable
+  - [x] [P1] Analyzer system prompt specified (user policy, 2025-08-05) — DEFAULT_SYSTEM_PROMPT is a full policy persona: ALLOWED (safe read-only dev), DENY w/ actionable reasons (destructive/irreversible, curl|sh, /tmp → use cwd, git writes, env-var secret printing — existence checks fine, secret files ~/.ssh/**/.env/credentials, non-trivial python → node), ASK_USER (chmod +x executables → prefer `bash -c` so the body stays LLM-visible, package installs npm/pip/brew/apt); live-verified 8/8 policy probes; design §8 item resolved
+  - [x] [P1] Verdict capture from tool_execution_end; missing verdict / error / timeout → inconclusive → prompt — schema validation (risk/outcome enums, reason string), toolCallId correlation with tool_execution_start, stderr tail in errors; 19/19 unit tests (fake spawn) + llm-client.integration.ts live 4/4 (ls -la→ALLOWED, rm -rf/curl|sh/push --force→not allowed)
+  - [x] [P1] Timeout + hard kill (timeoutMs, wired to ctx.signal); setStatus "Analyzing…" while in flight — SIGKILL on settle; AbortSignal → timeout-kind failure; output caps (1 MiB stdout, 4 KiB stderr tail)
+  - [x] [P2] llm.autoDeny mode (DENY → auto-block instead of prompt) — landed in the pipeline (DENY + autoDeny → block source llm; ASK_USER/inconclusive always prompt) and covered by pipeline tests
+- [x] [P1] Extension scaffold + config loader — DONE 2025-08-02 (index.ts + lib/ restructure + schema)
+  - [x] [P1] Layout restructure: only index.ts stays flat (pi discovery loads every flat `extensions/*.ts` and treats non-factory modules as load diagnostics — verified in pi loader source); helpers moved to lib/ (tree-sitter, matchers, llm-client, config + tests); subprocess tool stays in subprocess/ (would otherwise register immunity_verdict in the main session)
+  - [x] [P1] lib/config.ts: types + DEFAULT_CONFIG, normalizeConfig (garbage-in guard), mergeConfig on RAW project fields (absent → keep global value; lists = union global-first; enabled = AND), loadConfig (per-scope errors, never throws), trust gating (project scope skipped when untrusted), stampSchema + SCHEMA_URL
+  - [x] [P1] immunity.schema.json hand-maintained (draft 2020-12, partial files allowed, strict sections) — no codegen
+  - [x] [P1] index.ts: session_start → loadConfig (getAgentDir, CONFIG_DIR_NAME, ctx.isProjectTrusted), warning notify per scope error (hasUI-gated), getLoadedConfig() accessor for the pipeline; live-verified loads under real pi (agent_settled, exit 0)
+  - [x] [P1] config tests 16/16 (defaults, scalar override, list union, enabled AND, trust gating, invalid JSON/type normalization, $schema tolerance/stamping); full suite 95/95 — run: node --test "pi/extensions/immunity/lib/*.test.ts"
+- [x] [P1] Path engine — DONE 2025-08-02 (lib/paths.ts: globs, expansion, kinds, precedence)
+  - [x] [P1] Zero-dep glob compiler (compileGlob): `*`, `?`, `**` (any segments incl. zero; trailing `**` matches the bare prefix); leading/trailing slashes ignored on both sides; regex specials escaped
+  - [x] [P1] expandPath: leading `~/` + relative-to-cwd resolution for patterns and allow paths; leading-`**` patterns stay root-agnostic (not cwd-scoped) so `**/.env*` protects anywhere
+  - [x] [P1] evaluatePath: mode-strict (`read` rules gate reads, `modify` gates writes), `onlyIfExists` via existsSync (override for tests), allow kinds (file = exact, directory = dir + descendants), first-match rule/allow recorded for reason messages
+  - [x] [P1] Config boundary: broken regex patterns dropped at load (isValidRegExp); tests 28/28 (glob matrix, expansion, precedence, onlyIfExists with real fs, regex rules); full suite 123/123
+  - [x] [P1] Design doc §3 updated: glob subset, root-agnostic `**`, onlyIfExists semantics, regex notes
+- [x] [P1] Command engine — DONE 2025-08-02 (lib/commands.ts: config patterns + autoDeny + builtins)
+  - [x] [P1] matchPattern: deterministic auto-detect (metachars `.*+?^$[]{}|\`, bare parens excluded → literal) — regex tested unanchored, compile failure falls back to substring (never a silent no-match), empty patterns never match
+  - [x] [P1] checkCommand: builtins (model, useBuiltinMatchers gate) + patterns (prompt) + autoDenyPatterns (deny); deny > prompt > allow; all matches reported with stable ids (`pattern:<i>`, `autoDeny:<i>`, builtin ids) + labels for the reason pipeline
+  - [x] [P1] Documented footgun: substring `git push --force` also matches `--force-with-lease`; regex `git push --force( |$)` disambiguates — design §4.1 updated
+  - [x] [P1] Tests 16/16 (substring/regex semantics, parens-literal, broken-regex fallback, deny-over-prompt, builtin gating, multi-match reporting); full suite 139/139
+- [x] [P1] Pipeline — DONE 2025-08-02 (lib/pipeline.ts: staged decision flow)
+  - [x] [P1] runPipeline: grant → rules → LLM → decision; grant short-circuits, deterministic deny/prompt short-circuit the LLM stage; LLM runs only on bash requests that cleared the rules (file requests are deterministic-only in v1)
+  - [x] [P1] Grant model: grantKey (bash = raw command; file = access + tool + resolved target), GrantScope once/session/always, GrantStore interface + MemoryGrantStore (persistence later); grant stage recorded in the trace
+  - [x] [P1] Outcome mapping: deterministic deny → block (source autoDeny when an autoDeny pattern matched, else policy); prompt → prompt (source policy) or notify when requireConfirmation off; LLM ALLOWED → allow, DENY → block with autoDeny else prompt, ASK_USER → prompt, any client/verdict failure → prompt (inconclusive ⇒ never approval); every outcome carries a reason
+  - [x] [P1] Stage trace: grant/rules/llm stages with modelSource (ast|words), degraded, matches, path eval, verdict — feeds the event bus and audit log later
+  - [x] [P1] Pure module (no pi imports), runPipeline zero-config default; tests 25/25 incl. degradation notify, mode-strict path gating, LLM short-circuit proof (fake client throws), autoDeny matrix; full suite 164/164
+  - [x] [P1] Design §7: pipeline stage semantics resolved decision (grant keys, LLM only for bash, requireConfirmation downgrade)
+- [x] [P1] Prompt & block flow — DONE 2025-08-02 (lib/prompt.ts + testing.ts): select/input menu (Allow once | Allow for session | Always allow | Deny | Deny with reason), allow once records nothing, dismissed/UI-failure ⇒ deny (safety-first), deny-with-reason → optional input → remember-rule follow-up (bash: block pattern; file: protect path), persist failure still allows (persisted:false)
+- [x] [P1] Session grants + persisted "always" grants — DONE 2025-08-02 (lib/grants.ts)
+  - [x] [P1] Grant model moved to grants.ts: GrantScope/GrantStore/MemoryGrantStore (session store), PersistedGrants (config-backed), CompositeGrantStore (session first, then persisted); pipeline re-exports for compat
+  - [x] [P1] Persisted bash grants = exact raw-command strings in new `commands.allowed` (never substring; variants still prompt); path grants reuse `pathnames.allowed` kinds (file exact / directory descendants, access-agnostic, resolved vs session cwd/home); key parsing survives colons in targets
+  - [x] [P1] config.ts + schema: `commands.allowed` (union global-first like all lists); config tests updated
+  - [x] [P1] Prompt menu gains "Always allow" (persistGrant hook; hidden when unwired): command → commands.allowed, path → pathnames.allowed in the scope index.ts picks (default: project when trusted, else global); failed persist still allows the call but reports persisted:false
+  - [x] [P1] "Allow once" semantics locked: no grant recorded — literally one call; tests 14/14 (stores, exact-match, kinds, colon targets, composite layering, always-allow flows); full suite 194/194
+  - [x] [P1] Design §3/§6/§7 updated (commands.allowed, Always allow menu, grant semantics resolved decision)
+- [x] [P1] Reason pipeline — DONE 2025-08-02 (lib/audit.ts + lib/rules.ts)
+  - [x] [P1] blockMessage: `Blocked by user[: <userReason>]` for user denials; `Blocked by <source>: <reason>` for policy/autoDeny/llm — the reason the model sees
+  - [x] [P1] appendAudit: JSONL `{ ts, sessionId, tool, action, reason, userReason?, source }`, blocks only, sync append + parent-dir creation, failure-safe (false, never throws); defaultAuditPath = <cwd>/.pi/immunity.audit.jsonl
+  - [x] [P1] LLM verdict trail (user-driven, 2025-08-05): every analysis round-trip appends an `event: "verdict"` line — flat `outcome`/`risk`/`reason` (or `failure: "<kind>: <error>"` when inconclusive) + `llm.provider`/`model` — so "why did this command pass?" is answerable from the audit log; verdict entries are written even when the outcome was allow (design §7 amended)
+  - [x] [P1] writeRule: autoDeny → commands.autoDenyPatterns, path → pathnames.protected (mode modify), commandAllow → commands.allowed, pathAllow → pathnames.allowed (kind file/directory); creates missing scope files with $schema stamped; idempotent (dedupe); never clobbers invalid JSON scope files; unrelated sections untouched
+  - [x] [P1] Tests 12/12 (block messages, JSONL round-trip + parent dirs + unwritable safety, rule write/create/dedupe/preserve, broken-scope protection); full suite 206/206
+  - [x] [P1] Design §7: audit = blocks only; writeRule idempotent + no-clobber resolved decision
+- [x] [P1] Bus events + onPromptCommand — DONE 2025-08-02 (lib/bus.ts + lib/notify.ts): channels immunity:action:blocked / immunity:prompt:opened / immunity:prompt:closed (correlated prompt.id) / immunity:grant:created; runPromptCommand = shell spawn with IMMUNITY_PROMPT_ID/FEATURE/REASON/ACTION env vars, fire-and-forget with 30s kill, failures logged never thrown
+- [x] [P1] Interactive-only gating — DONE 2025-08-02 (lib/gate.ts + index.ts gate)
+  - [x] [P1] shouldEnforce(hasUI): enforcement iff dialog-capable UI; json/print modes never prompt or block; verified live (headless run executed `echo hello` ungated, zero load diagnostics)
+- [x] [P1] Test harness — DONE 2025-08-02 (lib/testing.ts)
+  - [x] [P1] Shared fakes: FakeUi (scripted select/input, call logs, failure injection), FakeBus (event capture); prompt.test.ts refactored onto FakeUi; colocated node:test pattern throughout
+- [x] [P1] index.ts wiring (tool_call interception) — DONE 2025-08-02, live-verified
+  - [x] [P1] handler.ts: handleToolCall(req, env) — pipeline → allow/notify/prompt/block; prompt flow with prompt:opened/closed (finally), onPromptCommand, grants; block path audits + emits immunity:action:blocked; notify outcome → ui.notify + allow
+  - [x] [P1] handler env: grants (composite) + sessionGrants (prompt writes); saveRule/persistGrant overrides (default = writeRule to ruleScope); toHomePath for durable ~/ grants; setStatus while analyzing
+  - [x] [P1] index.ts: session_start loads config + clears grants; tool_call gates on hasUI, adapts events (bash/read/write/edit; grep/find/ls + custom tools not gated — read-only), builds env (pi.events bus, sessionManager.getSessionId, ctx.signal, audit path from config); rule writes reflect into the in-memory merged config (effective immediately); session_shutdown clears grants
+  - [x] [P1] handler tests 18/18 (allow/notify/degradation, deterministic + autoDeny blocks with audit + events, protected-path prompt, allow once/session/always incl. session-grant short-circuit, deny + reason → audit userReason, remember-rule → autoDenyPatterns, protect-path → pathnames.protected, UI-failure → prompt:closed + deny, ~-relative path allows); full suite 236/236
+  - [x] [P1] Live verification: real pi --mode json loads the extension with zero diagnostics (negative control: broken copy → "Failed to load extension"); headless run gates nothing (hasUI false)
+- [x] [P1] Config layout change + global config (2025-08-05)
+  - [x] [P1] Project config moved from `<cwd>/.pi/extensions/immunity.json` to `<cwd>/.pi/immunity.json` (config.ts defaultProjectConfigPath, index.ts load + ruleScope, docs §3, schema description; alicancodes config moved)
+  - [x] [P1] Global config created at `~/.pi/agent/immunity.json` (= repo `pi/immunity.json` via the agent-dir symlink): LLM enabled (opencode-go/deepseek-v4-flash), `**/.env*` modify + `~/.ssh/**` read protected, audit on
+  - [x] [P1] 326 leaked `.test-tmp-*` dirs removed from lib/ (tests self-clean in finally; leftovers only from interrupted runs)
+- [x] [P1] LLM confirm mode (`llm.confirm: true`, user-requested 2025-08-06, DONE 2025-08-06): the LLM still analyzes every bash command that clears the deterministic rules, but an ALLOWED verdict does NOT auto-allow — the pipeline emits a prompt (source "llm") and the user decides; the prompt shows the verdict (risk + outcome + reason). DENY (autoDeny off → prompt), ASK_USER and inconclusive behavior unchanged; deterministic scope unchanged (only the silent-allow path gains a prompt). Impl: config.ts `LlmConfig.confirm` + schema + default false; pipeline.ts ALLOWED branch → `{outcome: "prompt", source: "llm", reason: "LLM verdict: ALLOWED (risk …) — …"}` when `llm.confirm` (unchanged allow otherwise); tests: pipeline (ALLOWED+confirm → prompt w/ verdict reason, ALLOWED+!confirm → allow), handler (confirm prompt → user allows → runs + grant; user denies → block + audit); audit verdict trail already covers the analysis side; global config has confirm:true (with autoDeny:true); design §7 amended
+- [x] [P1] Pipeline reordered: grant → LLM → rules-as-floor (user-driven, 2025-08-06, DONE 2025-08-06) — the LLM now supervises every bash command when llm.enabled (verdict recorded in the audit trail even when the floor later blocks/prompts); deterministic rules run after the LLM as the non-negotiable floor (deny always blocks, prompt always asks — an LLM ALLOWED can never override either); the LLM verdict decides only what the floor allowed; file requests stay deterministic-only; deterministic rules themselves unchanged (no weakening). Tests: LLM ALLOWED cannot override rule deny/prompt, autoDeny blocks despite ALLOWED, stage order grant→llm→rules; 249/249; design §2 flow diagram + §7 amended
+- [ ] [P2] /immunity:settings: menu-driven editor
+- [ ] [P2] /immunity:status + /immunity:audit: diagnostics commands
+- [ ] [P3] Warm analysis subprocess: persistent --mode rpc, zero per-call startup
+- [ ] [P3] Git write-command matcher
+- [ ] [P3] Secret redaction for analysis prompt
+- [ ] [P3] Per-scope revocation (project denies a global allow)
+- [ ] [P3] Integration tests: real pi --mode json runs (*.integration.ts)
+```

@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "enabled": true,
+  "pathnames": {
+    "protected": [
+      { "pattern": "**/.env*", "mode": "modify", "onlyIfExists": true },
+      { "pattern": "~/.ssh/**", "mode": "read" }
+    ],
+    "allowed": []
+  },
+  "commands": {
+    "patterns": [],
+    "autoDenyPatterns": [],
+    "allowed": [],
+    "useBuiltinMatchers": true
+  },
+  "llm": {
+    "enabled": true,
+    "provider": "opencode-go",
+    "model": "deepseek-v4-flash",
+    "appendSystemPrompt": "",
+    "piPath": "",
+    "timeoutMs": 30000,
+    "autoDeny": true,
+    "confirm": true
+  },
+  "treeSitter": { "binPath": "tree-sitter", "grammarDir": null },
+  "prompting": {
+    "requireConfirmation": true,
+    "askReasonOnDeny": true,
+    "sessionGrants": true,
+    "onPromptCommand": ""
+  },
+  "audit": { "enabled": true, "file": "" }
+}

@@ -4,7 +4,6 @@
   "defaultModel": "deepseek-v4-pro",
   "defaultThinkingLevel": "high",
   "packages": [
-    "npm:@aliou/pi-guardrails@0.15.0",
     "npm:pi-mcp-adapter@2.11.0",
     "npm:pi-vim@0.12.1"
   ],

@@ -1,0 +1,39 @@
+{
+  "strict": true,
+  "paths": {
+    "rules": [
+      {
+        "action": "ask",
+        "kind": "file",
+        "path": "./.env"
+      },
+      {
+        "action": "deny",
+        "kind": "directory",
+        "path": "~/.ssh"
+      },
+      {
+        "action": "allow",
+        "kind": "directory",
+        "path": "./node_modules"
+      }
+    ]
+  },
+  "commands": {
+    "rules": [],
+    "promptWhen": "blocked"
+  },
+  "llm": {
+    "provider": "opencode-go",
+    "model": "deepseek-v4-flash",
+    "timeoutMs": 30000,
+    "userPrompt": "",
+    "piPath": ""
+  },
+  "hooks": {
+    "afterPrompt": ""
+  },
+  "audit": {
+    "enabled": true
+  }
+}

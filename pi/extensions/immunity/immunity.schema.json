@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pi-immunity config",
+  "description": "Safety extension config. Shape is stable as of the 2025-08 rework; $schema entries are not written yet (added once the shape stabilizes).",
+  "type": "object",
+  "properties": {
+    "strict": {
+      "type": "boolean",
+      "default": true,
+      "description": "LLM unavailable AND no rule match → prompt the user (true) or allow (false)."
+    },
+    "paths": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["action", "kind", "path"],
+            "properties": {
+              "action": { "enum": ["ask", "allow", "deny"] },
+              "kind": { "enum": ["file", "directory"], "description": "directory = recursive (the directory and all descendants)" },
+              "path": {
+                "type": "string",
+                "description": "No globs. ~ allowed. Relative must start with ./",
+                "pattern": "^(~|~/|\\./|/)"
+              }
+            }
+          }
+        }
+      }
+    },
+    "commands": {
+      "type": "object",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["action", "raw"],
+            "properties": {
+              "action": { "enum": ["allow", "deny", "ask"] },
+              "exact": { "type": "boolean", "default": false, "description": "true → full-string match; false (default) → substring match" },
+              "raw": { "type": "string", "description": "Fed into the LLM prompt as policy" },
+              "regex": { "type": "string", "description": "Deterministic-only fallback matcher; never fed to the LLM" }
+            }
+          }
+        },
+        "promptWhen": {
+          "enum": ["asked", "blocked", "everytime"],
+          "default": "blocked",
+          "description": "asked: only ask-rules prompt (LLM DENY blocks silently). blocked: asks and blocks prompt. everytime: prompt after every verdict (debugging)."
+        }
+      }
+    },
+    "llm": {
+      "type": "object",
+      "properties": {
+        "disabled": { "type": "boolean", "default": false, "description": "Opt-out: the analysis layer is enabled unless disabled" },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "timeoutMs": { "type": "number", "minimum": 1, "default": 30000 },
+        "userPrompt": { "type": "string", "description": "User-authored policy text appended to the analyzer system prompt" },
+        "piPath": { "type": "string", "description": "pi binary for the headless analyzer subprocess (default: pi on PATH)" }
+      }
+    },
+    "hooks": {
+      "type": "object",
+      "properties": {
+        "afterPrompt": { "type": "string", "description": "Bash command run right before an approval prompt opens (context via IMMUNITY_* env vars)" }
+      }
+    },
+    "audit": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean", "default": true }
+      }
+    }
+  }
+}

@@ -44,10 +44,27 @@ export interface VerdictAuditEntry {
   reason?: string;
   /** "<kind>: <error>" when the analysis failed (timeout/spawn/no-verdict/parse/output) */
   failure?: string;
+  /** the model's actionable suggestions, as returned (general included) */
+  suggestedPaths?: string[];
+  suggestedCommands?: { raw: string; general?: string }[];
   llm: { provider?: string; model?: string };
 }
 
-export type AuditEntry = BlockAuditEntry | VerdictAuditEntry;
+/** A rule the user created from a model suggestion (protect/allow/block). */
+export interface RuleAuditEntry {
+  event: "rule";
+  ts: string;
+  sessionId: string;
+  tool: string;
+  action: string;
+  /** writeRule kind the choice mapped to */
+  kind: "path" | "pathAllow" | "autoDeny";
+  value: string;
+  scope: "project" | "global";
+  source: "suggestion";
+}
+
+export type AuditEntry = BlockAuditEntry | VerdictAuditEntry | RuleAuditEntry;
 
 export function defaultAuditPath(cwd: string, configDirName = ".pi"): string {
   return join(cwd, configDirName, "immunity.audit.jsonl");

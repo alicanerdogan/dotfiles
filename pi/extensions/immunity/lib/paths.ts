@@ -16,8 +16,8 @@
  * Regex rules match the resolved target as-is (no expansion) and are
  * validated at config load, so an invalid pattern can never reach here.
  */
-import { existsSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 import type { PathAllow, PathnameRules, PathRule } from "./config.ts";
 
 export type AccessKind = "read" | "modify";
@@ -25,6 +25,8 @@ export type AccessKind = "read" | "modify";
 export interface PathEval {
   protected: boolean;
   allowed: boolean;
+  /** true when the (realpath-resolved) target lies outside the project cwd */
+  outside: boolean;
   /** first matching protected rule (for reason messages) */
   rule?: PathRule;
   /** first matching allow (for reason messages) */
@@ -44,6 +46,36 @@ export interface PathEvalOptions {
 export function expandPath(target: string, opts: { cwd: string; home: string }): string {
   const expanded = target === "~" ? opts.home : target.startsWith("~/") ? join(opts.home, target.slice(2)) : target;
   return resolve(opts.cwd, expanded);
+}
+
+/**
+ * Resolve a path to its true location, falling back to the nearest existing
+ * ancestor (so writes through symlinked directories are still caught). The
+ * missing tail is re-appended; never throws — on total failure returns the
+ * input unchanged.
+ */
+export function realResolve(target: string): string {
+  let p = target;
+  const tail: string[] = [];
+  for (;;) {
+    try {
+      const real = realpathSync(p);
+      return tail.length ? join(real, ...tail.reverse()) : real;
+    } catch {
+      const parent = dirname(p);
+      if (parent === p) return target; // hit the root — give up
+      tail.push(basename(p));
+      p = parent;
+    }
+  }
+}
+
+/** Is the (already resolved) target outside the project cwd? Root cwd = everything in scope. */
+export function isOutsideScope(target: string, cwd: string): boolean {
+  const t = target.replace(/\/+$/, "") || "/";
+  const c = cwd.replace(/\/+$/, "") || "/";
+  if (c === "/") return false;
+  return t !== c && !t.startsWith(c + "/");
 }
 
 function escapeLiteral(ch: string): string {
@@ -113,7 +145,12 @@ export function matchesAllow(allow: PathAllow, target: string, opts: { cwd: stri
 export function evaluatePath(target: string, opts: PathEvalOptions): PathEval {
   const resolved = expandPath(target, opts);
   const exists = opts.exists ?? existsSync(resolved);
-  const result: PathEval = { protected: false, allowed: false };
+  const result: PathEval = {
+    protected: false,
+    allowed: false,
+    // realpath first: a symlink inside cwd pointing outside must count as outside
+    outside: isOutsideScope(realResolve(resolved), opts.cwd),
+  };
 
   for (const rule of opts.rules.protected) {
     if (rule.mode !== opts.kind) continue;

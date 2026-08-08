@@ -81,10 +81,16 @@ export type Stage = GrantStage | RulesStage | LlmStage;
 export type BlockSource = "policy" | "autoDeny" | "llm";
 export type PromptSource = "policy" | "llm";
 
+/** Actionable suggestions the LLM returned with a rejection (menu options). */
+export interface Suggestions {
+  paths: string[];
+  commands: { raw: string; general?: string }[];
+}
+
 export type Outcome =
   | { outcome: "allow"; reason: string }
   | { outcome: "notify"; reason: string }
-  | { outcome: "prompt"; reason: string; source: PromptSource }
+  | { outcome: "prompt"; reason: string; source: PromptSource; suggestions?: Suggestions }
   | { outcome: "block"; reason: string; source: BlockSource };
 
 export interface PipelineResult {
@@ -111,8 +117,30 @@ export interface PipelineOptions {
   signal?: AbortSignal;
 }
 
+function suggestionsOf(verdict: Verdict): Suggestions | undefined {
+  const paths = verdict.paths?.blocked ?? [];
+  const commands = verdict.commands?.blocked ?? [];
+  if (!paths.length && !commands.length) return undefined;
+  return { paths, commands };
+}
+
 function joinLabels(matches: CommandMatch[]): string {
   return matches.map((m) => m.label).join("; ");
+}
+
+/** Compact policy for the analysis message: what is protected, what is explicitly allowed. */
+export function formatPolicy(rules: CommandRules, pathRules: PathnameRules): string {
+  const parts: string[] = [];
+  if (pathRules.protected.length) {
+    parts.push(`paths protected [${pathRules.protected.map((r) => `${r.pattern} (${r.mode})`).join(", ")}]`);
+  }
+  if (pathRules.allowed.length) {
+    parts.push(`paths allowed [${pathRules.allowed.map((a) => `${a.path} (${a.kind})`).join(", ")}]`);
+  }
+  if (rules.allowed.length) {
+    parts.push(`commands allowed [${rules.allowed.join(", ")}]`);
+  }
+  return parts.join("; ");
 }
 
 /** Zero-config pipeline (all-default rules) — used when no options are given. */
@@ -147,6 +175,8 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions = DEFA
       appendSystemPrompt: opts.llm.appendSystemPrompt,
       timeoutMs: opts.llm.timeoutMs,
       signal: opts.signal,
+      cwd: req.cwd,
+      policy: formatPolicy(opts.rules, opts.pathRules),
     });
     llmStage = { stage: "llm", result, verdict: result.ok ? result.verdict : undefined };
     stages.push(llmStage);
@@ -164,11 +194,15 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions = DEFA
       home: req.home,
       rules: opts.pathRules,
     });
-    const verdict = path.protected && !path.allowed ? "prompt" : "allow";
+    // precedence: protected rules > explicit allows > outside-cwd boundary > allow;
+    // the boundary is implicit (prompt) — no config knob, users steer it via allowed
+    const verdict = path.protected && !path.allowed ? "prompt" : path.allowed ? "allow" : path.outside ? "prompt" : "allow";
     stages.push({ stage: "rules", verdict, matches: [], path });
     if (verdict === "prompt") {
       floor = "prompt";
-      floorReason = path.rule?.pattern ? `protected path matches ${path.rule.pattern}` : "protected path";
+      floorReason = path.rule?.pattern
+        ? `protected path matches ${path.rule.pattern}`
+        : `outside project cwd: ${req.target}`;
     }
   } else {
     const analysis: AnalyzeResult = analyzeCommand(req.command, opts.ts, opts.notify);
@@ -230,6 +264,7 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions = DEFA
             outcome: "prompt",
             reason: `LLM verdict: ALLOWED (risk ${verdict.risk})${verdict.reason ? ` — ${verdict.reason}` : " — run anyway?"}`,
             source: "llm",
+            suggestions: suggestionsOf(verdict),
           },
           stages,
         };
@@ -240,10 +275,23 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions = DEFA
         return { outcome: { outcome: "block", reason: verdict.reason ?? "LLM: deny", source: "llm" }, stages };
       }
       return {
-        outcome: { outcome: "prompt", reason: verdict.reason ?? "LLM: high risk", source: "llm" },
+        outcome: {
+          outcome: "prompt",
+          reason: verdict.reason ?? "LLM: high risk",
+          source: "llm",
+          suggestions: suggestionsOf(verdict),
+        },
         stages,
       };
     case "ASK_USER":
-      return { outcome: { outcome: "prompt", reason: verdict.reason ?? "LLM: asks user", source: "llm" }, stages };
+      return {
+        outcome: {
+          outcome: "prompt",
+          reason: verdict.reason ?? "LLM: asks user",
+          source: "llm",
+          suggestions: suggestionsOf(verdict),
+        },
+        stages,
+      };
   }
 }

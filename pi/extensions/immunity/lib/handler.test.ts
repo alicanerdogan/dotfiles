@@ -311,6 +311,134 @@ describe("llm verdict trail", () => {
     assert.ok(lines.some((l) => l.event === "block" && l.source === "user"));
   });
 
+  it("outside-cwd file access prompts; user allow → runs, user deny → block", async () => {
+    const { ui, auditDir, env } = makeEnv();
+    ui.selects.push("Allow once");
+    const allowed = await handleToolCall(file("~/keys/a.pem", "read"), env);
+    assert.deepEqual(allowed, { allow: true });
+    assert.equal(ui.selectCalls.length, 1);
+    assert.match(ui.selectCalls[0].title, /outside project cwd/);
+    assert.deepEqual(auditLines(auditDir), [], "allow leaves no audit entry");
+
+    const { ui: ui2, auditDir: auditDir2, env: env2 } = makeEnv();
+    ui2.selects.push("Deny");
+    const denied = await handleToolCall(file("~/keys/a.pem", "read"), env2);
+    assert.equal(denied.allow, false);
+    const lines = auditLines(auditDir2);
+    assert.equal(lines.length, 1);
+    assert.equal(lines[0].event, "block");
+    assert.equal(lines[0].source, "user");
+  });
+
+  it("protect-path suggestion: writes the rule, blocks, audits rule + block", async () => {
+    const saved: { kind: string; value: string; scope?: string }[] = [];
+    const { ui, auditDir, env } = makeEnv({
+      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
+      llmClient: async () => ({
+        ok: true,
+        verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["~/.ssh/id_rsa"] } },
+      }),
+      saveRule: async (kind, value, scope) => {
+        saved.push({ kind, value, scope });
+        return true;
+      },
+    });
+    ui.selects.push("Protect ~/.ssh/id_rsa (project)");
+    const r = await handleToolCall(bash("cat ~/.ssh/id_rsa"), env);
+    assert.equal(r.allow, false);
+    assert.deepEqual(saved, [{ kind: "path", value: "~/.ssh/id_rsa", scope: "project" }]);
+    const lines = auditLines(auditDir);
+    assert.ok(lines.some((l) => l.event === "rule" && l.kind === "path" && l.value === "~/.ssh/id_rsa" && l.scope === "project"));
+    assert.ok(lines.some((l) => l.event === "block" && l.source === "user"));
+    assert.ok(lines.some((l) => l.event === "verdict"));
+  });
+
+  it("block-command suggestion: writes an autoDeny pattern, blocks", async () => {
+    const saved: { kind: string; value: string; scope?: string }[] = [];
+    const { ui, env } = makeEnv({
+      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
+      llmClient: async () => ({
+        ok: true,
+        verdict: { risk: "high", outcome: "DENY", commands: { blocked: [{ raw: "git push --force", general: "git push" }] } },
+      }),
+      saveRule: async (kind, value, scope) => {
+        saved.push({ kind, value, scope });
+        return true;
+      },
+    });
+    ui.selects.push("Block git push --force");
+    const r = await handleToolCall(bash("git push --force"), env);
+    assert.equal(r.allow, false);
+    assert.deepEqual(saved, [{ kind: "autoDeny", value: "git push --force", scope: "project" }]);
+  });
+
+  it("allow-path suggestion: writes the rule, retries the pipeline, the LLM allows", async () => {
+    let calls = 0;
+    const saved: { kind: string; value: string; scope?: string }[] = [];
+    const { ui, auditDir, env } = makeEnv({
+      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
+      llmClient: async () => {
+        calls++;
+        return calls === 1
+          ? { ok: true, verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["~/.ssh/id_rsa"] } } }
+          : { ok: true, verdict: { risk: "none", outcome: "ALLOWED" } };
+      },
+      persistGrant: async (kind, value, scope) => {
+        saved.push({ kind, value, scope });
+        return true;
+      },
+    });
+    ui.selects.push("Allow ~/.ssh/id_rsa (project)");
+    const r = await handleToolCall(bash("cat ~/.ssh/id_rsa"), env);
+    assert.deepEqual(r, { allow: true });
+    assert.equal(calls, 2, "retry re-runs the analysis with the updated policy");
+    assert.deepEqual(saved, [{ kind: "path", value: "~/.ssh/id_rsa", scope: "project" }]);
+    const lines = auditLines(auditDir);
+    assert.ok(lines.some((l) => l.event === "rule" && l.kind === "pathAllow" && l.scope === "project"));
+    assert.equal(lines.filter((l) => l.event === "verdict").length, 2);
+  });
+
+  it("allow-path suggestion caps retries at 2, then honors the override", async () => {
+    let calls = 0;
+    const { ui, env } = makeEnv({
+      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
+      llmClient: async () => {
+        calls++;
+        return { ok: true, verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["~/.ssh/id_rsa"] } } };
+      },
+      persistGrant: async () => true,
+    });
+    ui.selects.push("Allow ~/.ssh/id_rsa (project)", "Allow ~/.ssh/id_rsa (project)", "Allow ~/.ssh/id_rsa (project)");
+    const r = await handleToolCall(bash("cat ~/.ssh/id_rsa"), env);
+    assert.deepEqual(r, { allow: true });
+    assert.equal(calls, 3, "two retries, then the user's explicit override wins");
+  });
+
+  it("glob-ish suggested paths are audit-only: no menu options, concrete ones render", async () => {
+    const saved: { value: string; scope?: string }[] = [];
+    let calls = 0;
+    const { ui, env } = makeEnv({
+      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
+      llmClient: async () => {
+        calls++;
+        return calls === 1
+          ? { ok: true, verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["~/repos/*", "~/.ssh/id_rsa"] } } }
+          : { ok: true, verdict: { risk: "none", outcome: "ALLOWED" } };
+      },
+      persistGrant: async (kind, value, scope) => {
+        saved.push({ value, scope });
+        return true;
+      },
+    });
+    ui.selects.push("Allow ~/.ssh/id_rsa (project)");
+    const r = await handleToolCall(bash("ls ~/.ssh/id_rsa"), env);
+    assert.deepEqual(r, { allow: true });
+    assert.deepEqual(saved, [{ value: "~/.ssh/id_rsa", scope: "project" }]);
+    const labels = ui.selectCalls[0].options;
+    assert.ok(labels.some((l) => l.includes("Allow ~/.ssh/id_rsa")), "concrete path renders");
+    assert.ok(!labels.some((l) => l.includes("~/repos/*")), "glob suggestion never renders as an option");
+  });
+
   it("records inconclusive failures in the verdict trail", async () => {
     const { auditDir, env } = makeEnv({
       config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },

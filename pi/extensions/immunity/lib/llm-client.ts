@@ -24,6 +24,10 @@ export interface Verdict {
   risk: Risk;
   outcome: Outcome;
   reason?: string;
+  /** concrete paths the command touches — menu offers protect/allow per path */
+  paths?: { blocked: string[] };
+  /** exact commands to block — raw is actionable, general is audit-only */
+  commands?: { blocked: { raw: string; general?: string }[] };
 }
 
 export type VerdictResult =
@@ -48,6 +52,10 @@ export interface VerdictOptions {
   timeoutMs?: number;
   /** session abort signal (ctx.signal); abort behaves like a timeout */
   signal?: AbortSignal;
+  /** project cwd — added to the analysis message so relative paths are judgeable */
+  cwd?: string;
+  /** compact policy (protected/allowed paths + allowed commands) — the model aligns verdicts with the user's rules */
+  policy?: string;
   /** injectable for tests */
   spawn?: SpawnFn;
 }
@@ -80,10 +88,14 @@ export const DEFAULT_SYSTEM_PROMPT =
   "  • destructive/irreversible commands: rm -rf, dd to devices, disk formatting\n" +
   "  • remote code execution patterns: curl/wget | sh/bash, eval of fetched content\n" +
   "  • working in /tmp (creating, modifying, deleting files there, running scripts from there): the agent must use the project cwd for temporary files\n" +
+  "  • accessing files outside the project cwd — creating, modifying, deleting, or reading files in home directories, /tmp, /etc, or other projects: forbidden unless the Policy line explicitly allows the path; use the project cwd instead\n" +
+  "  • read-only does not create an exception: listing, counting, or stat-ing files or directories outside the project cwd is still outside-cwd access and is DENY unless the Policy line allows the path\n" +
   "  • any git write: commit, push (incl. --force), reset, checkout, stash, branch -D, merge, rebase, clean, tag, remote changes — git state is sensitive\n" +
   "  • printing secret values from environment variables (echo $TOKEN, printenv TOKEN, env | grep TOKEN): checking existence (test -n \"$TOKEN\", ${TOKEN:+set}) is fine\n" +
   "  • reading secret files: ~/.ssh/**, id_rsa/id_ed25519, .env files, credentials, keychains\n" +
   "  • python for anything beyond a trivial one-liner: prefer node\n" +
+  "- Explicit user allowances take precedence over the general policy: paths and commands listed as allowed in the Policy line are deliberate user decisions and must NEVER be DENYed on general grounds (at most ASK_USER).\n" +
+  "- When you deny or flag a command, populate the suggestion fields so the user can act: paths.blocked = concrete paths the command touches (protect or allow them) — always normalized concrete paths, never globs or wildcards (*, **, ?); commands.blocked = the exact command (raw) plus optionally a broader pattern (general) the same rule could cover. general is only informational — never apply it yourself.\n" +
   "- ASK_USER (delegate the decision, risk low|high), with context in the reason:\n" +
   "  • chmod/chmod +x creating an executable (ad-hoc scripts): the agent should prefer `bash -c '...'` so the script body stays visible to the LLM\n" +
   "  • installing packages: npm install/add, pnpm add, pip install, brew install, apt-get install and similar";
@@ -111,7 +123,9 @@ export function buildArgs(command: string, opts: VerdictOptions = {}): string[] 
   if (opts.provider) args.push("--provider", opts.provider);
   if (opts.model) args.push("--model", opts.model);
   if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
-  args.push("--system-prompt", opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, command);
+  let message = opts.cwd ? `Command: ${command}\nProject cwd: ${opts.cwd}` : command;
+  if (opts.policy) message += `\nPolicy: ${opts.policy}`;
+  args.push("--system-prompt", opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, message);
   return args;
 }
 
@@ -147,6 +161,38 @@ function parseVerdict(result: unknown): { ok: true; verdict: Verdict } | { ok: f
   }
   const verdict: Verdict = { risk: v.risk, outcome: v.outcome };
   if (v.reason !== undefined) verdict.reason = v.reason;
+
+  const paths = v.paths as { blocked?: unknown } | undefined;
+  if (paths !== undefined) {
+    if (typeof paths !== "object" || paths === null || !Array.isArray(paths.blocked)) {
+      return { ok: false, error: "paths must be { blocked: string[] }" };
+    }
+    if (paths.blocked.some((p) => typeof p !== "string")) {
+      return { ok: false, error: "paths.blocked must contain only strings" };
+    }
+    verdict.paths = { blocked: paths.blocked as string[] };
+  }
+
+  const commands = v.commands as { blocked?: unknown } | undefined;
+  if (commands !== undefined) {
+    if (typeof commands !== "object" || commands === null || !Array.isArray(commands.blocked)) {
+      return { ok: false, error: "commands must be { blocked: array }" };
+    }
+    const blocked: { raw: string; general?: string }[] = [];
+    for (const b of commands.blocked) {
+      const entry = b as { raw?: unknown; general?: unknown } | null;
+      if (typeof entry !== "object" || entry === null || typeof entry.raw !== "string") {
+        return { ok: false, error: "commands.blocked entries need a raw string" };
+      }
+      if (entry.general !== undefined && typeof entry.general !== "string") {
+        return { ok: false, error: "commands.blocked general must be a string" };
+      }
+      const out: { raw: string; general?: string } = { raw: entry.raw };
+      if (entry.general !== undefined) out.general = entry.general;
+      blocked.push(out);
+    }
+    verdict.commands = { blocked };
+  }
   return { ok: true, verdict };
 }
 

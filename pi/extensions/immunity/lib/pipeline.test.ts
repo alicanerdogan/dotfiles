@@ -247,6 +247,42 @@ describe("llm stage", () => {
     assert.equal(r.stages.length, 2);
   });
 
+  it("outside-cwd access prompts by default (implicit boundary)", async () => {
+    const r = await runPipeline(file("~/keys/a.pem", "read"), opts({ ...llmEnv() }));
+    assert.equal(r.outcome.outcome, "prompt");
+    assert.equal(r.outcome.source, "policy");
+    assert.match(r.outcome.reason, /outside project cwd: ~\/keys\/a\.pem/);
+  });
+
+  it("an explicit allowed entry bypasses the outside-cwd boundary", async () => {
+    const r = await runPipeline(file("~/keys/a.pem", "read"), opts({
+      pathRules: {
+        ...DEFAULT_CONFIG.pathnames,
+        allowed: [{ kind: "file", path: "~/keys/a.pem" }],
+      },
+      ...llmEnv(),
+    }));
+    assert.equal(r.outcome.outcome, "allow");
+  });
+
+  it("a protected rule outside cwd still prompts (protected beats boundary)", async () => {
+    const r = await runPipeline(file("~/.ssh/id_rsa", "read"), opts({
+      pathRules: {
+        ...DEFAULT_CONFIG.pathnames,
+        protected: [{ pattern: "~/.ssh/**", mode: "read" }],
+      },
+      ...llmEnv(),
+    }));
+    assert.equal(r.outcome.outcome, "prompt");
+    assert.equal(r.outcome.source, "policy");
+    assert.match(r.outcome.reason, /protected path matches/);
+  });
+
+  it("inside-cwd access is unaffected by the boundary", async () => {
+    const r = await runPipeline(file("notes.txt"), opts({ ...llmEnv() }));
+    assert.equal(r.outcome.outcome, "allow");
+  });
+
   it("ALLOWED → allow with the verdict reason", async () => {
     const r = await runPipeline(
       bash("ls -la"),
@@ -281,6 +317,42 @@ describe("llm stage", () => {
     assert.equal(r.outcome.outcome, "prompt");
     assert.equal(r.outcome.source, "llm");
     assert.equal(r.outcome.reason, "force push");
+    assert.equal(r.outcome.suggestions, undefined);
+  });
+
+  it("carries suggestions from the verdict into the prompt outcome", async () => {
+    const r = await runPipeline(
+      bash("git push --force"),
+      opts({
+        ...llmEnv(),
+        llmClient: fakeClient({
+          ok: true,
+          verdict: {
+            risk: "high",
+            outcome: "DENY",
+            paths: { blocked: [] },
+            commands: { blocked: [{ raw: "git push --force", general: "git push" }] },
+          },
+        }),
+      }),
+    );
+    assert.equal(r.outcome.outcome, "prompt");
+    assert.deepEqual(r.outcome.suggestions, { paths: [], commands: [{ raw: "git push --force", general: "git push" }] });
+  });
+
+  it("carries suggestions on confirm prompts too", async () => {
+    const r = await runPipeline(
+      bash("ls -la"),
+      opts({
+        ...llmEnv({ confirm: true }),
+        llmClient: fakeClient({
+          ok: true,
+          verdict: { risk: "low", outcome: "ALLOWED", paths: { blocked: ["~/.ssh/id_rsa"] } },
+        }),
+      }),
+    );
+    assert.equal(r.outcome.outcome, "prompt");
+    assert.deepEqual(r.outcome.suggestions, { paths: ["~/.ssh/id_rsa"], commands: [] });
   });
 
   it("DENY with autoDeny on → block source llm", async () => {
@@ -318,6 +390,33 @@ describe("llm stage", () => {
     assert.equal(r.outcome.outcome, "prompt");
     assert.equal(r.outcome.source, "llm");
     assert.ok(r.outcome.reason.includes("inconclusive"));
+  });
+
+  it("passes the policy to the LLM client (paths + commands)", async () => {
+    let policy = "";
+    const r = await runPipeline(
+      bash("cat .env"),
+      opts({
+        rules: {
+          ...DEFAULT_CONFIG.commands,
+          allowed: ["npm install lodash"],
+        },
+        pathRules: {
+          ...DEFAULT_CONFIG.pathnames,
+          protected: [{ pattern: "**/.env*", mode: "modify" }],
+          allowed: [{ kind: "directory", path: "~/keys" }],
+        },
+        ...llmEnv(),
+        llmClient: async (_cmd, o) => {
+          policy = o.policy ?? "";
+          return { ok: true, verdict: { risk: "none", outcome: "ALLOWED" } };
+        },
+      }),
+    );
+    assert.match(policy, /paths protected \[\*\*\/\.env\* \(modify\)\]/);
+    assert.match(policy, /paths allowed \[~\/keys \(directory\)\]/);
+    assert.match(policy, /commands allowed \[npm install lodash\]/);
+    assert.equal(r.outcome.outcome, "allow");
   });
 
   it("records the verdict in the trace", async () => {

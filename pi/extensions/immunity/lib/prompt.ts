@@ -24,6 +24,7 @@
  */
 import type { MemoryGrantStore } from "./grants.ts";
 import type { PromptingConfig } from "./config.ts";
+import type { Suggestions } from "./pipeline.ts";
 
 export interface PromptUi {
   select(title: string, options: string[]): Promise<string | undefined>;
@@ -32,7 +33,14 @@ export interface PromptUi {
 
 export type PromptResult =
   | { action: "allow"; grant: "once" | "session" | "always"; persisted?: boolean }
-  | { action: "deny"; userReason?: string; savedRule?: "autoDeny" | "path" };
+  | { action: "deny"; userReason?: string; savedRule?: "autoDeny" | "path" }
+  | {
+      action: "suggestion";
+      /** writeRule kind the choice maps to */
+      kind: "path" | "pathAllow" | "autoDeny";
+      value: string;
+      scope: "project" | "global";
+    };
 
 export interface PromptFlowOptions {
   ui: PromptUi;
@@ -46,10 +54,12 @@ export interface PromptFlowOptions {
   command?: string;
   /** resolved target for the "Protect this path" rule (file requests) */
   protectPath?: string;
+  /** the model's actionable suggestions — rendered as protect/allow/block options */
+  suggestions?: Suggestions;
   /** persists a deny rule to config; return false when the save failed */
-  saveRule?: (kind: "autoDeny" | "path", value: string) => boolean | Promise<boolean>;
+  saveRule?: (kind: "autoDeny" | "path", value: string, scope?: "project" | "global") => boolean | Promise<boolean>;
   /** persists an "always allow" grant to config (commands.allowed / pathnames.allowed) */
-  persistGrant?: (kind: "command" | "path", value: string) => boolean | Promise<boolean>;
+  persistGrant?: (kind: "command" | "path", value: string, scope?: "project" | "global") => boolean | Promise<boolean>;
 }
 
 const ALLOW_ONCE = "Allow once";
@@ -62,13 +72,32 @@ const NO = "No";
 const BLOCK_PATTERN = "Block this command pattern";
 const PROTECT_PATH = "Protect this path";
 
+function suggestionOptions(suggestions: Suggestions): { label: string; result: Extract<PromptResult, { action: "suggestion" }> }[] {
+  const out: { label: string; result: Extract<PromptResult, { action: "suggestion" }> }[] = [];
+  // the model is instructed to return concrete paths; glob-ish entries are
+  // audit-only (they can never become exact allow rules)
+  const concrete = suggestions.paths.filter((p) => !/[*?\[\]]/.test(p));
+  for (const p of concrete) {
+    out.push({ label: `Protect ${p} (project)`, result: { action: "suggestion", kind: "path", value: p, scope: "project" } });
+    out.push({ label: `Protect ${p} (global)`, result: { action: "suggestion", kind: "path", value: p, scope: "global" } });
+    out.push({ label: `Allow ${p} (project)`, result: { action: "suggestion", kind: "pathAllow", value: p, scope: "project" } });
+    out.push({ label: `Allow ${p} (global)`, result: { action: "suggestion", kind: "pathAllow", value: p, scope: "global" } });
+  }
+  for (const c of suggestions.commands) {
+    out.push({ label: `Block ${c.raw}`, result: { action: "suggestion", kind: "autoDeny", value: c.raw, scope: "project" } });
+  }
+  return out;
+}
+
 export async function runPromptFlow(opts: PromptFlowOptions): Promise<PromptResult> {
+  const suggestionEntries = opts.suggestions ? suggestionOptions(opts.suggestions) : [];
   const options = [
     ALLOW_ONCE,
     ...(opts.prompting.sessionGrants ? [ALLOW_SESSION] : []),
     ...(opts.persistGrant ? [ALWAYS_ALLOW] : []),
     DENY,
     DENY_WITH_REASON,
+    ...suggestionEntries.map((e) => e.label),
   ];
 
   let choice: string | undefined;
@@ -80,6 +109,10 @@ export async function runPromptFlow(opts: PromptFlowOptions): Promise<PromptResu
 
   if (choice === undefined || choice === DENY) {
     return { action: "deny" };
+  }
+  const suggestion = suggestionEntries.find((e) => e.label === choice);
+  if (suggestion) {
+    return suggestion.result;
   }
   if (choice === ALLOW_ONCE) {
     return { action: "allow", grant: "once" };

@@ -86,6 +86,24 @@ describe("buildArgs — verified subprocess invocation", () => {
     ]);
   });
 
+  it("appends the project cwd to the analysis message when provided", () => {
+    const args = buildArgs("cat ../x", { cwd: "/repo" });
+    assert.equal(args[args.length - 1], "Command: cat ../x\nProject cwd: /repo");
+    assert.equal(buildArgs("ls -la").at(-1), "ls -la", "no cwd → message stays the bare command");
+  });
+
+  it("appends the policy line when provided", () => {
+    const args = buildArgs("cat .env", {
+      cwd: "/repo",
+      policy: "paths protected [**/.env* (modify)]; paths allowed [~/keys (directory)]; commands allowed [npm install lodash]",
+    });
+    assert.equal(
+      args[args.length - 1],
+      "Command: cat .env\nProject cwd: /repo\nPolicy: paths protected [**/.env* (modify)]; paths allowed [~/keys (directory)]; commands allowed [npm install lodash]",
+    );
+    assert.equal(buildArgs("ls -la", { cwd: "/repo" }).at(-1), "Command: ls -la\nProject cwd: /repo", "no policy → no line");
+  });
+
   it("inserts provider/model/append-system-prompt before --system-prompt", () => {
     const args = buildArgs("git status", {
       provider: "openai",
@@ -168,6 +186,38 @@ describe("requestVerdict — happy path", () => {
 });
 
 describe("requestVerdict — inconclusive paths", () => {
+  it("passes through valid suggestions (paths + commands)", async () => {
+    const r = fakeChild();
+    const p = requestVerdict("x", { spawn: r.spawnFn, timeoutMs: 10_000 });
+    r.child.stdout.write(START("c1") + "\n");
+    r.child.stdout.write(
+      END("c1", VERDICT_TEXT({ risk: "high", outcome: "DENY", paths: { blocked: ["~/.ssh/id_rsa"] }, commands: { blocked: [{ raw: "git push --force", general: "git push" }] } })) + "\n",
+    );
+    const res = await p;
+    assert.equal(res.ok, true);
+    if (res.ok) {
+      assert.deepEqual(res.verdict.paths, { blocked: ["~/.ssh/id_rsa"] });
+      assert.deepEqual(res.verdict.commands, { blocked: [{ raw: "git push --force", general: "git push" }] });
+    }
+  });
+
+  it("rejects malformed suggestions", async () => {
+    for (const bad of [
+      { paths: { blocked: [42] } },
+      { paths: { blocked: "nope" } },
+      { commands: { blocked: [{ general: "git push" }] } },
+      { commands: { blocked: "nope" } },
+    ]) {
+      const r = fakeChild();
+      const p = requestVerdict("x", { spawn: r.spawnFn, timeoutMs: 10_000 });
+      r.child.stdout.write(START("c1") + "\n");
+      r.child.stdout.write(END("c1", VERDICT_TEXT({ risk: "high", outcome: "DENY", ...bad })) + "\n");
+      const res = await p;
+      assert.equal(res.ok, false, `expected parse failure for ${JSON.stringify(bad)}`);
+      if (!res.ok) assert.equal(res.kind, "parse");
+    }
+  });
+
   it("rejects a verdict with an invalid risk", async () => {
     const r = fakeChild();
     const p = requestVerdict("x", { spawn: r.spawnFn, timeoutMs: 10_000 });

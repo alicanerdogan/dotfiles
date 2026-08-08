@@ -12,13 +12,13 @@
  *                      deny → audit + blocked event + block
  *           → block:  audit + blocked event + block
  */
-import { runPipeline, grantKey, type ToolRequest } from "./pipeline.ts";
+import { runPipeline, grantKey, type Suggestions, type ToolRequest } from "./pipeline.ts";
 import type { GrantStore } from "./grants.ts";
 import type { ImmunityConfig } from "./config.ts";
 import { expandPath } from "./paths.ts";
 import type { Bus } from "./bus.ts";
 import { emitBlocked, emitGrantCreated, emitPromptClosed, emitPromptOpened, newPromptId } from "./bus.ts";
-import { runPromptFlow, type PromptUi } from "./prompt.ts";
+import { runPromptFlow, type PromptResult, type PromptUi } from "./prompt.ts";
 import { appendAudit, blockMessage, type BlockSource } from "./audit.ts";
 import { writeRule } from "./rules.ts";
 import { runPromptCommand } from "./notify.ts";
@@ -47,11 +47,13 @@ export interface HandlerEnv {
   auditFile: string | null;
   /** config scope file that rule conversion + always-grants write to */
   ruleScope: string;
+  /** global config scope file ("… (global)" suggestion options write here) */
+  globalRuleScope?: string;
   /** kind for persisted path allows (index.ts stats the target) */
   pathKindFor?: (target: string) => "file" | "directory";
   /** overrides for the deny-rule / always-grant persist hooks (default: writeRule to ruleScope) */
-  saveRule?: (kind: "autoDeny" | "path", value: string) => boolean | Promise<boolean>;
-  persistGrant?: (kind: "command" | "path", value: string) => boolean | Promise<boolean>;
+  saveRule?: (kind: "autoDeny" | "path", value: string, scope?: "project" | "global") => boolean | Promise<boolean>;
+  persistGrant?: (kind: "command" | "path", value: string, scope?: "project" | "global") => boolean | Promise<boolean>;
   /** default: runPromptCommand with the 30 s kill */
   onPromptCommand?: (command: string, env: Record<string, string>) => void;
 }
@@ -87,7 +89,7 @@ function auditEntry(req: ToolRequest, env: HandlerEnv, source: BlockSource, reas
   };
 }
 
-export async function handleToolCall(req: ToolRequest, env: HandlerEnv): Promise<HandlerResult> {
+export async function handleToolCall(req: ToolRequest, env: HandlerEnv, retries = 0): Promise<HandlerResult> {
   const { config } = env;
   const status = env.setStatus;
   try {
@@ -121,6 +123,8 @@ export async function handleToolCall(req: ToolRequest, env: HandlerEnv): Promise
             risk: res.ok ? res.verdict.risk : null,
             outcome: res.ok ? res.verdict.outcome : null,
             reason: res.ok ? res.verdict.reason : undefined,
+            suggestedPaths: res.ok ? res.verdict.paths?.blocked : undefined,
+            suggestedCommands: res.ok ? res.verdict.commands?.blocked : undefined,
             failure: res.ok ? undefined : `${res.kind}: ${res.error}`,
             llm: {
               provider: config.llm.provider || undefined,
@@ -140,7 +144,7 @@ export async function handleToolCall(req: ToolRequest, env: HandlerEnv): Promise
     }
 
     if (outcome.outcome === "prompt") {
-      return prompt(req, env, outcome.reason, outcome.source);
+      return prompt(req, env, outcome.reason, outcome.source, outcome.suggestions, retries);
     }
 
     // block (deterministic deny or llm autoDeny)
@@ -160,7 +164,14 @@ export async function handleToolCall(req: ToolRequest, env: HandlerEnv): Promise
   }
 }
 
-async function prompt(req: ToolRequest, env: HandlerEnv, reason: string, source: "policy" | "llm"): Promise<HandlerResult> {
+async function prompt(
+  req: ToolRequest,
+  env: HandlerEnv,
+  reason: string,
+  source: "policy" | "llm",
+  suggestions: Suggestions | undefined,
+  retries = 0,
+): Promise<HandlerResult> {
   const promptId = newPromptId();
   const feature = featureOf(req);
   emitPromptOpened(env.bus, { prompt: { id: promptId, feature, reason } });
@@ -176,6 +187,21 @@ async function prompt(req: ToolRequest, env: HandlerEnv, reason: string, source:
     const key = grantKey(req);
     const protectPath = req.kind === "file" ? toHomePath(resolved(req), env.home) : undefined;
     const command = req.kind === "bash" ? req.command : undefined;
+    const scopePath = (scope: "project" | "global" | undefined) =>
+      scope === "global" ? env.globalRuleScope ?? env.ruleScope : env.ruleScope;
+    const saveRuleImpl =
+      env.saveRule ??
+      ((kind: "autoDeny" | "path", value: string, scope?: "project" | "global") =>
+        writeRule(scopePath(scope), kind === "autoDeny" ? "autoDeny" : "path", value));
+    const persistGrantImpl =
+      env.persistGrant ??
+      ((kind: "command" | "path", value: string, scope?: "project" | "global") =>
+        writeRule(
+          scopePath(scope),
+          kind === "command" ? "commandAllow" : "pathAllow",
+          value,
+          kind === "path" ? { pathKind: env.pathKindFor?.(value) ?? "file" } : undefined,
+        ));
 
     const result = await runPromptFlow({
       ui: env.ui,
@@ -185,19 +211,14 @@ async function prompt(req: ToolRequest, env: HandlerEnv, reason: string, source:
       prompting: env.config.prompting,
       command,
       protectPath,
-      saveRule:
-        env.saveRule ??
-        ((kind, value) => writeRule(env.ruleScope, kind === "autoDeny" ? "autoDeny" : "path", value)),
-      persistGrant:
-        env.persistGrant ??
-        ((kind, value) =>
-          writeRule(
-            env.ruleScope,
-            kind === "command" ? "commandAllow" : "pathAllow",
-            value,
-            kind === "path" ? { pathKind: env.pathKindFor?.(value) ?? "file" } : undefined,
-          )),
+      saveRule: saveRuleImpl,
+      persistGrant: persistGrantImpl,
+      suggestions,
     });
+
+    if (result.action === "suggestion") {
+      return applySuggestion(req, env, result, reason, retries, saveRuleImpl, persistGrantImpl);
+    }
 
     if (result.action === "allow") {
       if (result.grant !== "once") {
@@ -229,4 +250,65 @@ async function prompt(req: ToolRequest, env: HandlerEnv, reason: string, source:
 function resolved(req: ToolRequest): string {
   if (req.kind !== "file") return "";
   return expandPath(req.target, { cwd: req.cwd, home: req.home });
+}
+
+/**
+ * A suggestion-driven rule write: audit the user's choice, persist the rule
+ * to the chosen scope, then: allow → retry the pipeline once (the LLM must
+ * see the updated policy); protect/block → block the call (deterministic).
+ */
+async function applySuggestion(
+  req: ToolRequest,
+  env: HandlerEnv,
+  result: Extract<PromptResult, { action: "suggestion" }>,
+  reason: string,
+  retries: number,
+  saveRuleImpl: (kind: "autoDeny" | "path", value: string, scope?: "project" | "global") => boolean | Promise<boolean>,
+  persistGrantImpl: (kind: "command" | "path", value: string, scope?: "project" | "global") => boolean | Promise<boolean>,
+): Promise<HandlerResult> {
+  const action = actionOf(req);
+  const tool = req.kind === "bash" ? "bash" : req.tool;
+  if (env.auditFile) {
+    appendAudit(
+      {
+        event: "rule",
+        ts: new Date().toISOString(),
+        sessionId: env.sessionId,
+        tool,
+        action,
+        kind: result.kind,
+        value: result.value,
+        scope: result.scope,
+        source: "suggestion",
+      },
+      env.auditFile,
+    );
+  }
+
+  if (result.kind === "path") {
+    await saveRuleImpl("path", result.value, result.scope);
+  } else if (result.kind === "autoDeny") {
+    await saveRuleImpl("autoDeny", result.value, result.scope);
+  } else {
+    await persistGrantImpl("path", result.value, result.scope);
+  }
+
+  // allow → retry once (the LLM must see the updated policy); the retry may
+  // prompt again if the rule did not cover the command (honest loop)
+  if (result.kind === "pathAllow") {
+    if (retries >= 2) return { allow: true }; // explicit override, twice confirmed
+    return handleToolCall(req, env, retries + 1);
+  }
+
+  // protect/block → the call stays blocked
+  const entry = auditEntry(req, env, "user", reason);
+  if (env.auditFile) appendAudit(entry, env.auditFile);
+  emitBlocked(env.bus, {
+    feature: featureOf(req),
+    action,
+    reason,
+    block: { source: "user", userReason: `saved rule (${result.kind} ${result.value}, ${result.scope})` },
+    context: { sessionId: env.sessionId },
+  });
+  return { allow: false, reason: blockMessage("user", reason) };
 }

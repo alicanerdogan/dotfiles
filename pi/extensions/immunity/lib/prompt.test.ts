@@ -40,6 +40,40 @@ describe("runPromptFlow menu", () => {
     await runPromptFlow(o);
     assert.equal(o.ui.selectCalls[0].title, "Immunity: disk formatting");
   });
+
+  it("appends protect/allow/block options from the model's suggestions", async () => {
+    const o = opts({
+      suggestions: {
+        paths: ["~/.ssh/id_rsa"],
+        commands: [{ raw: "git push --force", general: "git push" }],
+      },
+    });
+    o.ui.selects.push("Deny");
+    await runPromptFlow(o);
+    assert.deepEqual(o.ui.selectCalls[0].options, [
+      "Allow once",
+      "Allow for session",
+      "Deny",
+      "Deny with reason",
+      "Protect ~/.ssh/id_rsa (project)",
+      "Protect ~/.ssh/id_rsa (global)",
+      "Allow ~/.ssh/id_rsa (project)",
+      "Allow ~/.ssh/id_rsa (global)",
+      "Block git push --force",
+    ]);
+  });
+
+  it("returns the suggestion result when picked", async () => {
+    const o = opts({ suggestions: { paths: ["~/.ssh/id_rsa"], commands: [] } });
+    o.ui.selects.push("Allow ~/.ssh/id_rsa (global)");
+    const r = await runPromptFlow(o);
+    assert.deepEqual(r, { action: "suggestion", kind: "pathAllow", value: "~/.ssh/id_rsa", scope: "global" });
+
+    const o2 = opts({ suggestions: { paths: [], commands: [{ raw: "git push --force" }] } });
+    o2.ui.selects.push("Block git push --force");
+    const r2 = await runPromptFlow(o2);
+    assert.deepEqual(r2, { action: "suggestion", kind: "autoDeny", value: "git push --force", scope: "project" });
+  });
 });
 
 describe("allow paths", () => {

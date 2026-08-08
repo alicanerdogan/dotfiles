@@ -106,6 +106,7 @@ function buildEnv(ctx: ExtensionContext, pi: ExtensionAPI): HandlerEnv {
   const trusted = ctx.isProjectTrusted();
   const projectScope = join(ctx.cwd, CONFIG_DIR_NAME, "immunity.json");
   const ruleScope = trusted ? projectScope : globalConfigPath();
+  const globalRuleScope = globalConfigPath();
   const auditFile = config.audit.enabled
     ? config.audit.file
       ? resolve(ctx.cwd, config.audit.file)
@@ -116,9 +117,10 @@ function buildEnv(ctx: ExtensionContext, pi: ExtensionAPI): HandlerEnv {
   const writeRuleEffective = (
     kind: "autoDeny" | "path" | "commandAllow" | "pathAllow",
     value: string,
-    opts?: { pathKind?: "file" | "directory" },
+    opts?: { pathKind?: "file" | "directory"; scope?: "project" | "global" },
   ): boolean => {
-    const ok = writeRule(ruleScope, kind, value, opts);
+    const scopeFile = opts?.scope === "global" ? globalRuleScope : ruleScope;
+    const ok = writeRule(scopeFile, kind, value, opts);
     if (!ok) return false;
     switch (kind) {
       case "autoDeny":
@@ -158,11 +160,12 @@ function buildEnv(ctx: ExtensionContext, pi: ExtensionAPI): HandlerEnv {
     signal: ctx.signal,
     auditFile,
     ruleScope,
+    globalRuleScope,
     pathKindFor: pathKindOf,
-    saveRule: (kind, value) => writeRuleEffective(kind, value),
-    persistGrant: (kind, value) =>
+    saveRule: (kind, value, scope) => writeRuleEffective(kind, value, { scope }),
+    persistGrant: (kind, value, scope) =>
       kind === "command"
-        ? writeRuleEffective("commandAllow", value)
-        : writeRuleEffective("pathAllow", value, { pathKind: pathKindOf(value) }),
+        ? writeRuleEffective("commandAllow", value, { scope })
+        : writeRuleEffective("pathAllow", value, { pathKind: pathKindOf(value), scope }),
   };
 }

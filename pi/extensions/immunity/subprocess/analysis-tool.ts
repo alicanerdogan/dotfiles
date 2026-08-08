@@ -30,6 +30,21 @@ export default function (pi: ExtensionAPI) {
       risk: Type.Enum({ none: "none", low: "low", high: "high" }),
       outcome: Type.Enum({ ALLOWED: "ALLOWED", DENY: "DENY", ASK_USER: "ASK_USER" }),
       reason: Type.Optional(Type.String({ description: "short justification" })),
+      paths: Type.Optional(
+        Type.Object({
+          blocked: Type.Array(Type.String({ description: "concrete path the command touches that should be protected or allowed by the user" })),
+        }),
+      ),
+      commands: Type.Optional(
+        Type.Object({
+          blocked: Type.Array(
+            Type.Object({
+              raw: Type.String({ description: "the exact command to block" }),
+              general: Type.Optional(Type.String({ description: "a broader pattern the same rule could cover (audit-only, never applied automatically)" })),
+            }),
+          ),
+        }),
+      ),
     }),
     async execute(toolCallId, params) {
       return {

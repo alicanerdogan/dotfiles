@@ -4,9 +4,9 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { compileGlob, evaluatePath, expandPath, matchesAllow, matchesRule } from "./paths.ts";
+import { compileGlob, evaluatePath, expandPath, isOutsideScope, matchesAllow, matchesRule, realResolve } from "./paths.ts";
 import { normalizeConfig, type PathnameRules } from "./config.ts";
 
 const CWD = "/repo";
@@ -143,7 +143,7 @@ describe("evaluatePath", () => {
 
   it("returns not protected/allowed for empty rules", () => {
     const r = opts(RULES({}));
-    assert.deepEqual(r, { protected: false, allowed: false });
+    assert.deepEqual(r, { protected: false, allowed: false, outside: false });
   });
 
   it("protects a matching modify rule", () => {
@@ -224,5 +224,53 @@ describe("config boundary: broken regex rules", () => {
     const rules = RULES({ protected: [{ pattern: "(", mode: "read", regex: true }, { pattern: "/etc/.*", mode: "read", regex: true }] });
     assert.equal(rules.protected.length, 1);
     assert.equal(rules.protected[0].pattern, "/etc/.*");
+  });
+});
+
+describe("outside-cwd boundary", () => {
+  it("isOutsideScope: inside, outside, .. traversal, root cwd, sibling prefix", () => {
+    assert.equal(isOutsideScope("/repo/notes.txt", "/repo"), false);
+    assert.equal(isOutsideScope("/repo", "/repo"), false);
+    assert.equal(isOutsideScope("/repo/sub/a.env", "/repo"), false);
+    assert.equal(isOutsideScope("/etc/passwd", "/repo"), true);
+    assert.equal(isOutsideScope("/home/u/keys/a.pem", "/repo"), true);
+    assert.equal(isOutsideScope("/other/x", "/repo"), true, ".. traversal resolves outside");
+    assert.equal(isOutsideScope("/repo2/file", "/repo"), true, "sibling prefix is not inside");
+    assert.equal(isOutsideScope("/repo2/file", "/repo2"), false);
+    assert.equal(isOutsideScope("/anything", "/"), false, "root cwd: everything in scope");
+    assert.equal(isOutsideScope("/repo/x/", "/repo"), false, "trailing slash ignored");
+  });
+
+  it("evaluatePath flags targets outside cwd (realpath falls back to the resolved string)", () => {
+    const rules = RULES({});
+    assert.equal(evaluatePath("notes.txt", { kind: "read", cwd: CWD, home: HOME, rules }).outside, false);
+    assert.equal(evaluatePath("../other/secret.txt", { kind: "read", cwd: CWD, home: HOME, rules }).outside, true);
+    assert.equal(evaluatePath("~/keys/a.pem", { kind: "read", cwd: CWD, home: HOME, rules }).outside, true);
+    assert.equal(evaluatePath("/etc/passwd", { kind: "read", cwd: CWD, home: HOME, rules }).outside, true);
+  });
+
+  it("realResolve catches a symlink inside cwd pointing outside", () => {
+    const dir = mkdtempSync(join(import.meta.dirname, ".test-tmp-"));
+    try {
+      const cwd = join(dir, "cwd");
+      const outside = join(dir, "outside");
+      mkdirSync(cwd);
+      mkdirSync(outside);
+      writeFileSync(join(outside, "secret.txt"), "x");
+      symlinkSync(outside, join(cwd, "link"));
+
+      const rules = RULES({});
+      assert.equal(evaluatePath(join(cwd, "notes.txt"), { kind: "read", cwd, home: HOME, rules }).outside, false);
+      assert.equal(evaluatePath(join(cwd, "link", "secret.txt"), { kind: "read", cwd, home: HOME, rules }).outside, true);
+      // write through a symlinked directory whose target does not exist yet
+      assert.equal(evaluatePath(join(cwd, "link", "new.txt"), { kind: "modify", cwd, home: HOME, rules }).outside, true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("realResolve never throws and returns the input on total failure", () => {
+    assert.equal(realResolve("/repo/notes.txt"), "/repo/notes.txt");
+    assert.equal(realResolve("/nonexistent/deep/path"), "/nonexistent/deep/path");
   });
 });

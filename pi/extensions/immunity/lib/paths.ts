@@ -1,45 +1,50 @@
 /**
- * pi-immunity path engine: protected/allowed evaluation (design §3).
+ * pi-immunity path engine (design updates doc): scoped rule evaluation for
+ * file access.
  *
- * Zero-dependency glob subset: `*` (within a segment), `?` (single char),
- * `**` (any number of segments) — everything else literal. Globs and allow
- * paths get `~/` expansion (leading only) and relative-to-cwd resolution
- * before matching; targets are normalized the same way.
+ * Rule semantics: `kind: "file"` = exact path; `kind: "directory"` =
+ * recursive (the directory and all descendants, including files created
+ * later). No globbing. `~` expands to home; relative paths resolve against
+ * the project cwd (the loader requires `./` for relatives).
  *
- * Precedence (safety-first): a target is `protected` when any matching
- * rule's mode equals the access kind (`read` rules gate reads, `modify`
- * rules gate writes); it is `allowed` when an allow entry matches (file =
- * exact, directory = the directory and descendants). The caller's rule:
- * protected && !allowed → gate. `onlyIfExists` rules fire only when the
- * target exists on disk (creating a new file is not gated by them).
+ * Scope precedence (safety-first): session statements (handled by the
+ * caller) > project rules > global rules > hard defaults. Within a scope
+ * the safest matching action wins: deny > ask > allow. Hard defaults:
+ * outside-cwd access (realpath-based, so symlink escapes count) and
+ * gitignored files are blocked unless an allow rule covers them.
  *
- * Regex rules match the resolved target as-is (no expansion) and are
- * validated at config load, so an invalid pattern can never reach here.
+ * `ask` and `deny` path rules both surface as prompts (blocked requests
+ * are prompted with the six-option menu); they differ in the reason text
+ * and in the LLM policy feed.
  */
-import { existsSync, realpathSync } from "node:fs";
+import { realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
-import type { PathAllow, PathnameRules, PathRule } from "./config.ts";
+import type { PathRule } from "./config.ts";
 
-export type AccessKind = "read" | "modify";
+export type Decision = "allow" | "ask" | "deny";
 
 export interface PathEval {
-  protected: boolean;
-  allowed: boolean;
+  decision: Decision;
+  /** scope that produced the decision: a rule scope, or "default" (no rule matched) */
+  scope: "project" | "global" | "default";
+  /** the matching rule (reason text), when a rule decided */
+  rule?: PathRule;
+  /** why a default decision was taken */
+  defaultReason?: string;
   /** true when the (realpath-resolved) target lies outside the project cwd */
   outside: boolean;
-  /** first matching protected rule (for reason messages) */
-  rule?: PathRule;
-  /** first matching allow (for reason messages) */
-  allow?: PathAllow;
+  /** true when the target is gitignored (only meaningful inside the repo) */
+  gitIgnored: boolean;
 }
 
 export interface PathEvalOptions {
-  kind: AccessKind;
   cwd: string;
   home: string;
-  rules: PathnameRules;
-  /** existence override for tests; default: fs.existsSync on the resolved target */
-  exists?: boolean;
+  project: PathRule[];
+  global: PathRule[];
+  /** gitignore check for the resolved target; default: real `git check-ignore` */
+  gitIgnoreCheck?: (path: string, cwd: string) => Promise<boolean>;
 }
 
 /** Expand a leading `~/` and resolve relative paths against cwd. */
@@ -78,97 +83,59 @@ export function isOutsideScope(target: string, cwd: string): boolean {
   return t !== c && !t.startsWith(c + "/");
 }
 
-function escapeLiteral(ch: string): string {
-  return /[.*+?^${}()|[\]\\]/.test(ch) ? "\\" + ch : ch;
-}
-
-function translateSegment(seg: string): string {
-  let out = "";
-  for (const ch of seg) {
-    if (ch === "*") out += "[^/]*";
-    else if (ch === "?") out += "[^/]";
-    else out += escapeLiteral(ch);
-  }
-  return out;
-}
-
-/**
- * Compile a glob pattern into a target matcher. Leading/trailing slashes
- * are ignored on both sides (matching runs over the resolved absolute
- * path); `**` as a full segment matches any number of segments (including
- * zero), and a trailing `**` also matches the bare prefix (`a/**` matches
- * `a`).
- */
-export function compileGlob(pattern: string): (target: string) => boolean {
-  if (pattern === "**") return () => true;
-  const segs = pattern.replace(/^\/+|\/+$/g, "").split("/");
-  let out = "^";
-  for (let i = 0; i < segs.length; i++) {
-    const seg = segs[i];
-    const isLast = i === segs.length - 1;
-    const isTrailingStar = seg === "**" && isLast;
-    if (i > 0 && segs[i - 1] !== "**" && !isTrailingStar) out += "/";
-    if (seg === "**") {
-      out += isLast ? "(?:/.*)?" : "(?:[^/]+/)*";
-    } else {
-      out += translateSegment(seg);
-    }
-  }
-  const re = new RegExp(out + "$");
-  return (target: string) => re.test(target.replace(/^\/+/, ""));
-}
-
-/** Does this protected rule match the (already resolved) target? */
+/** Does this rule cover the (already resolved) target? */
 export function matchesRule(rule: PathRule, target: string, opts: { cwd: string; home: string }): boolean {
-  if (!rule.pattern) return false;
-  if (rule.regex) {
-    try {
-      return new RegExp(rule.pattern).test(target);
-    } catch {
-      return false;
-    }
-  }
-  // `**`-leading patterns are already "anywhere" patterns — do not resolve
-  // them against cwd (a cwd-scoped **/.env* would never protect /etc).
-  const pattern = rule.pattern.startsWith("**") ? rule.pattern : expandPath(rule.pattern, opts);
-  return compileGlob(pattern)(target);
-}
-
-/** Does this allow entry cover the (already resolved) target? */
-export function matchesAllow(allow: PathAllow, target: string, opts: { cwd: string; home: string }): boolean {
-  const expanded = expandPath(allow.path, opts);
-  if (allow.kind === "file") return target === expanded;
+  const expanded = expandPath(rule.path, opts);
+  if (rule.kind === "file") return target === expanded;
   const dir = expanded.replace(/\/+$/, "");
   return target === dir || target.startsWith(dir + "/");
 }
 
-export function evaluatePath(target: string, opts: PathEvalOptions): PathEval {
+/** Safest matching action within one scope: deny > ask > allow. */
+export function scopeDecision(matches: PathRule[]): { decision: Decision; rule: PathRule } | null {
+  if (matches.some((m) => m.action === "deny")) {
+    return { decision: "deny", rule: matches.find((m) => m.action === "deny")! };
+  }
+  if (matches.some((m) => m.action === "ask")) {
+    return { decision: "ask", rule: matches.find((m) => m.action === "ask")! };
+  }
+  if (matches.length) return { decision: "allow", rule: matches[0] };
+  return null;
+}
+
+/** Real `git check-ignore` (exit 0 = ignored). Non-repo or missing git → not ignored. */
+export function gitCheckIgnore(path: string, cwd: string): Promise<boolean> {
+  return new Promise((resolvePromise) => {
+    let result: { status: number | null; error?: Error };
+    try {
+      result = spawnSync("git", ["check-ignore", "-q", path], { cwd });
+    } catch (err) {
+      result = { status: null, error: err instanceof Error ? err : undefined };
+    }
+    resolvePromise(result.error === undefined && result.status === 0);
+  });
+}
+
+export async function evaluatePath(target: string, opts: PathEvalOptions): Promise<PathEval> {
   const resolved = expandPath(target, opts);
-  const exists = opts.exists ?? existsSync(resolved);
-  const result: PathEval = {
-    protected: false,
-    allowed: false,
-    // realpath first: a symlink inside cwd pointing outside must count as outside
-    outside: isOutsideScope(realResolve(resolved), opts.cwd),
-  };
+  const outside = isOutsideScope(realResolve(resolved), opts.cwd);
+  const gitIgnored = outside ? false : await (opts.gitIgnoreCheck ?? gitCheckIgnore)(resolved, opts.cwd);
 
-  for (const rule of opts.rules.protected) {
-    if (rule.mode !== opts.kind) continue;
-    if (rule.onlyIfExists && !exists) continue;
-    if (matchesRule(rule, resolved, opts)) {
-      result.protected = true;
-      result.rule = rule;
-      break;
-    }
+  const projectMatch = scopeDecision(opts.project.filter((r) => matchesRule(r, resolved, opts)));
+  if (projectMatch) {
+    return { decision: projectMatch.decision, scope: "project", rule: projectMatch.rule, outside, gitIgnored };
+  }
+  const globalMatch = scopeDecision(opts.global.filter((r) => matchesRule(r, resolved, opts)));
+  if (globalMatch) {
+    return { decision: globalMatch.decision, scope: "global", rule: globalMatch.rule, outside, gitIgnored };
   }
 
-  for (const allow of opts.rules.allowed) {
-    if (matchesAllow(allow, resolved, opts)) {
-      result.allowed = true;
-      result.allow = allow;
-      break;
-    }
+  // hard defaults: outside cwd and gitignored files are blocked
+  if (outside) {
+    return { decision: "deny", scope: "default", defaultReason: `outside project cwd`, outside, gitIgnored };
   }
-
-  return result;
+  if (gitIgnored) {
+    return { decision: "deny", scope: "default", defaultReason: `gitignored file`, outside, gitIgnored };
+  }
+  return { decision: "allow", scope: "default", outside, gitIgnored };
 }

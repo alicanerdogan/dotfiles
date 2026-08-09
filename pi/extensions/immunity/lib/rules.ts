@@ -1,22 +1,25 @@
 /**
- * Rule conversion (design §6): persist a user's intent as config in a
- * chosen scope file (global or project — index.ts picks). Pure fs module;
- * writes are failure-safe (false instead of throw) and idempotent
- * (dedupe). A scope file with invalid JSON is never clobbered.
+ * Rule persistence (design updates doc): write a user's menu choice as a
+ * config rule in a chosen scope file (global or project — index.ts picks).
+ * Pure fs module; writes are failure-safe (false instead of throw) and
+ * idempotent (dedupe). A scope file with invalid JSON is never clobbered.
  *
- *   autoDeny      → commands.autoDenyPatterns   (exact command string)
- *   path          → pathnames.protected         ({ pattern, mode: "modify" })
- *   commandAllow  → commands.allowed            (persisted always-grant)
- *   pathAllow     → pathnames.allowed           ({ kind, path })
+ *   commandAllow → commands.rules { action: "allow", exact: true, raw }
+ *   commandDeny  → commands.rules { action: "deny",  exact: true, raw }
+ *   pathAllow    → paths.rules    { action: "allow", kind, path }
+ *   pathDeny     → paths.rules    { action: "deny",  kind, path }
+ *
+ * Menu writes are always exact-string (exact: true; raw = the command as
+ * run / the path as resolved). `$schema` is tolerated on read, never
+ * stamped on write.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { stampSchema } from "./config.ts";
 
-export type RuleKind = "autoDeny" | "path" | "commandAllow" | "pathAllow";
+export type RuleKind = "commandAllow" | "commandDeny" | "pathAllow" | "pathDeny";
 
 export interface WriteRuleOptions {
-  /** kind for pathAllow entries; default "file" */
+  /** kind for path rules; default "file" */
   pathKind?: "file" | "directory";
 }
 
@@ -33,35 +36,25 @@ function readScope(path: string): { ok: true; raw: Raw } | { ok: false } {
   }
 }
 
-function section(raw: Raw, keys: string[]): string[] {
+function ruleSection(raw: Raw, section: "commands" | "paths"): unknown[] {
   let cur: Record<string, unknown> = raw;
-  for (const key of keys.slice(0, -1)) {
-    const next = cur[key];
-    if (typeof next !== "object" || next === null || Array.isArray(next)) {
-      const fresh: Record<string, unknown> = {};
-      cur[key] = fresh;
-      cur = fresh;
-    } else {
-      cur = next as Record<string, unknown>;
-    }
+  const next = cur[section];
+  if (typeof next !== "object" || next === null || Array.isArray(next)) {
+    const fresh: Record<string, unknown> = {};
+    cur[section] = fresh;
+    cur = fresh;
+  } else {
+    cur = next as Record<string, unknown>;
   }
-  const last = keys[keys.length - 1];
-  const arr = cur[last];
+  const arr = cur["rules"];
   if (!Array.isArray(arr)) {
-    cur[last] = [];
+    cur["rules"] = [];
   }
-  return cur[last] as unknown as string[];
+  return cur["rules"] as unknown[];
 }
 
-function pushString(raw: Raw, keys: string[], value: string): boolean {
-  const arr = section(raw, keys) as unknown[];
-  if (arr.includes(value)) return false; // already present — nothing to write
-  arr.push(value);
-  return true;
-}
-
-function pushRule(raw: Raw, keys: string[], rule: Record<string, unknown>): boolean {
-  const arr = section(raw, keys) as unknown[];
+function pushRule(raw: Raw, section: "commands" | "paths", rule: Record<string, unknown>): boolean {
+  const arr = ruleSection(raw, section);
   if (arr.some((e) => typeof e === "object" && e !== null && JSON.stringify(e) === JSON.stringify(rule))) {
     return false;
   }
@@ -77,24 +70,24 @@ export function writeRule(scopePath: string, kind: RuleKind, value: string, opts
 
   let changed = false;
   switch (kind) {
-    case "autoDeny":
-      changed = pushString(raw, ["commands", "autoDenyPatterns"], value);
-      break;
     case "commandAllow":
-      changed = pushString(raw, ["commands", "allowed"], value);
+      changed = pushRule(raw, "commands", { action: "allow", exact: true, raw: value });
       break;
-    case "path":
-      changed = pushRule(raw, ["pathnames", "protected"], { pattern: value, mode: "modify" });
+    case "commandDeny":
+      changed = pushRule(raw, "commands", { action: "deny", exact: true, raw: value });
       break;
     case "pathAllow":
-      changed = pushRule(raw, ["pathnames", "allowed"], { kind: opts.pathKind ?? "file", path: value });
+      changed = pushRule(raw, "paths", { action: "allow", kind: opts.pathKind ?? "file", path: value });
+      break;
+    case "pathDeny":
+      changed = pushRule(raw, "paths", { action: "deny", kind: opts.pathKind ?? "file", path: value });
       break;
   }
   if (!changed) return true; // idempotent: already present counts as saved
 
   try {
     mkdirSync(dirname(scopePath), { recursive: true });
-    writeFileSync(scopePath, `${JSON.stringify(stampSchema(raw), null, 2)}\n`, "utf8");
+    writeFileSync(scopePath, `${JSON.stringify(raw, null, 2)}\n`, "utf8");
     return true;
   } catch {
     return false;

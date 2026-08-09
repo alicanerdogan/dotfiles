@@ -1,192 +1,180 @@
-/**
- * Unit tests for the config loader: defaults, scope merge (scalar override,
- * list union, enabled AND), trust gating, normalization, $schema stamping.
- * Uses repo-local temp dirs (sandbox blocks /tmp).
- */
-import { describe, it, after } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+  asCommandRule,
+  asPathRule,
   DEFAULT_CONFIG,
+  isValidPathInput,
   loadConfig,
   mergeConfig,
   normalizeConfig,
-  stampSchema,
-  SCHEMA_URL,
-  defaultGlobalConfigPath,
-  defaultProjectConfigPath,
-  type ImmunityConfig,
 } from "./config.ts";
 
-const tmp = mkdtempSync(join(import.meta.dirname, ".test-tmp-"));
-after(() => rmSync(tmp, { recursive: true, force: true }));
-
-function write(path: string, text: string) {
-  writeFileSync(path, text, "utf8");
+const tmpDirs: string[] = [];
+function tmp(): string {
+  const dir = mkdtempSync(join(import.meta.dirname, ".test-tmp-"));
+  tmpDirs.push(dir);
+  return dir;
 }
-
-function load(globalPath: string | null, projectPath: string | null, trusted: boolean) {
-  return loadConfig({ globalPath: globalPath ?? join(tmp, "no-global.json"), projectPath, trusted });
-}
-
-describe("defaults and paths", () => {
-  it("returns DEFAULT_CONFIG when no files exist", () => {
-    const r = load(null, null, true);
-    assert.deepEqual(r.config, DEFAULT_CONFIG);
-    assert.equal(r.scopes.length, 1);
-    assert.equal(r.scopes[0].loaded, false);
-  });
-
-  it("records a skipped project scope when untrusted", () => {
-    const p = join(tmp, "project.json");
-    write(p, "{}");
-    const r = load(null, p, false);
-    assert.equal(r.scopes.length, 2);
-    assert.equal(r.scopes[1].skipped, true);
-    assert.equal(r.scopes[1].loaded, false);
-  });
-
-  it("computes default paths", () => {
-    assert.equal(defaultGlobalConfigPath("/home/u"), "/home/u/.pi/agent/immunity.json");
-    assert.equal(defaultProjectConfigPath("/repo", ".pi"), "/repo/.pi/immunity.json");
-    assert.equal(defaultProjectConfigPath("/repo"), "/repo/.pi/immunity.json");
-  });
-
-  it("SCHEMA_URL points at the hand-maintained schema", () => {
-    assert.ok(SCHEMA_URL.startsWith("file://"), SCHEMA_URL);
-    assert.ok(SCHEMA_URL.endsWith("/immunity.schema.json"), SCHEMA_URL);
-  });
+after(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
 });
 
-describe("scope merge", () => {
-  const GLOBAL = {
-    version: 1,
-    enabled: true,
-    pathnames: { protected: [{ pattern: "**/.env*", mode: "modify", onlyIfExists: true }], allowed: [] },
-    commands: { patterns: ["git push --force-with-lease"], autoDenyPatterns: ["git push --force"], allowed: [], useBuiltinMatchers: true },
-    llm: { enabled: false, provider: "", model: "", appendSystemPrompt: "", piPath: "", timeoutMs: 30_000, autoDeny: false },
-    treeSitter: { binPath: "tree-sitter", grammarDir: null },
-    prompting: { requireConfirmation: true, askReasonOnDeny: true, sessionGrants: true, onPromptCommand: "" },
-    audit: { enabled: true, file: "" },
-  } satisfies ImmunityConfig;
-
-  it("project overrides scalar sections field-by-field", () => {
-    const merged = mergeConfig(GLOBAL, {
-      ...DEFAULT_CONFIG,
-      llm: { ...DEFAULT_CONFIG.llm, timeoutMs: 5000, provider: "ollama" },
-      prompting: { ...DEFAULT_CONFIG.prompting, sessionGrants: false },
-    });
-    assert.equal(merged.llm.timeoutMs, 5000);
-    assert.equal(merged.llm.provider, "ollama");
-    assert.equal(merged.llm.enabled, false, "unspecified fields keep global values");
-    assert.equal(merged.prompting.sessionGrants, false);
-    assert.equal(merged.prompting.requireConfirmation, true, "other scalar fields untouched");
-  });
-
-  it("list sections are unions with global entries first", () => {
-    const merged = mergeConfig(GLOBAL, {
-      ...DEFAULT_CONFIG,
-      pathnames: { protected: [{ pattern: "**/secrets/*", mode: "read" }], allowed: [{ kind: "file", path: "~/dev" }] },
-      commands: { ...DEFAULT_CONFIG.commands, patterns: ["rm -rf /"], autoDenyPatterns: [] },
-    });
-    assert.deepEqual(merged.pathnames.protected, [...GLOBAL.pathnames.protected, { pattern: "**/secrets/*", mode: "read", onlyIfExists: false, regex: false }]);
-    assert.deepEqual(merged.pathnames.allowed, [{ kind: "file", path: "~/dev" }]);
-    assert.deepEqual(merged.commands.patterns, ["git push --force-with-lease", "rm -rf /"]);
-    assert.deepEqual(merged.commands.autoDenyPatterns, ["git push --force"], "global autoDeny cannot be dropped");
-  });
-
-  it("enabled is AND — either scope can switch immunity off", () => {
-    const off = { ...DEFAULT_CONFIG, enabled: false };
-    assert.equal(mergeConfig(GLOBAL, off).enabled, false);
-    assert.equal(mergeConfig(off, DEFAULT_CONFIG).enabled, false);
-    assert.equal(mergeConfig(GLOBAL, DEFAULT_CONFIG).enabled, true);
-  });
-});
-
-describe("normalization", () => {
-  it("falls back to defaults for wrong types", () => {
-    const n = normalizeConfig({
-      enabled: "yes",
-      llm: { timeoutMs: "30000", enabled: 1, provider: "ollama" },
-      commands: { patterns: "not-an-array", autoDenyPatterns: [42, "git push --force"], useBuiltinMatchers: "x" },
-      pathnames: { protected: [{ pattern: "**/.env*", mode: "modify", onlyIfExists: true }, { pattern: 42, mode: "read" }, { pattern: "**/*.pem", mode: "browse" }] },
-      treeSitter: { binPath: "ts", grammarDir: null },
-    });
-    assert.equal(n.enabled, true);
-    assert.equal(n.llm.timeoutMs, 30_000);
-    assert.equal(n.llm.enabled, false);
-    assert.equal(n.llm.provider, "ollama");
-    assert.deepEqual(n.commands.patterns, []);
-    assert.deepEqual(n.commands.autoDenyPatterns, ["git push --force"]);
-    assert.equal(n.commands.useBuiltinMatchers, true);
-    assert.equal(n.pathnames.protected.length, 1, "invalid entries dropped, valid kept");
-    assert.equal(n.pathnames.protected[0].mode, "modify");
-    assert.equal(n.treeSitter.grammarDir, null);
-  });
-
-  it("applies defaults for partial protected entries", () => {
-    const n = normalizeConfig({ pathnames: { protected: [{ pattern: "/etc/hosts", mode: "read" }] } });
-    assert.deepEqual(n.pathnames.protected[0], { pattern: "/etc/hosts", mode: "read", onlyIfExists: false, regex: false });
-  });
-
-  it("tolerates a $schema key and unknown top-level keys", () => {
-    const n = normalizeConfig({ $schema: "file:///x/schema.json", version: 1, futureKey: 42 });
-    assert.equal(n.version, 1);
-    assert.deepEqual(n.pathnames.protected, []);
-  });
-
-  it("returns defaults for non-object configs", () => {
-    assert.deepEqual(normalizeConfig("nope"), DEFAULT_CONFIG);
-    assert.deepEqual(normalizeConfig([1, 2]), DEFAULT_CONFIG);
+describe("defaults", () => {
+  it("normalizeConfig(null) is the default config", () => {
     assert.deepEqual(normalizeConfig(null), DEFAULT_CONFIG);
+    assert.equal(DEFAULT_CONFIG.strict, true);
+    assert.equal(DEFAULT_CONFIG.commands.promptWhen, "blocked");
+    assert.equal(DEFAULT_CONFIG.llm.disabled, false);
+    assert.equal(DEFAULT_CONFIG.audit.enabled, true);
+  });
+
+  it("tolerates unknown keys ($schema) and drops invalid sections", () => {
+    const c = normalizeConfig({ $schema: "file:///x", bogus: 1, llm: { provider: 42 } });
+    assert.deepEqual(c.llm, DEFAULT_CONFIG.llm);
+    assert.deepEqual(c.paths, { rules: [] });
   });
 });
 
-describe("loading files", () => {
-  it("merges a global and a trusted project file", () => {
-    const g = join(tmp, "global.json");
-    const p = join(tmp, "project.json");
-    write(g, JSON.stringify({ llm: { timeoutMs: 60_000 }, commands: { patterns: ["global-pat"] } }));
-    write(p, JSON.stringify({ llm: { provider: "ollama" }, commands: { patterns: ["project-pat"] } }));
-    const r = load(g, p, true);
-    assert.deepEqual(r.scopes.map((s) => [s.loaded, s.error]), [[true, undefined], [true, undefined]]);
-    assert.equal(r.config.llm.timeoutMs, 60_000, "global scalar kept where project silent");
-    assert.equal(r.config.llm.provider, "ollama", "project scalar override");
-    assert.deepEqual(r.config.commands.patterns, ["global-pat", "project-pat"], "union, global first");
+describe("path input contract", () => {
+  it("accepts ~, ~/, ./ and absolute; rejects bare relatives and ..", () => {
+    assert.ok(isValidPathInput("~"));
+    assert.ok(isValidPathInput("~/keys"));
+    assert.ok(isValidPathInput("./.env"));
+    assert.ok(isValidPathInput("/etc/hosts"));
+    assert.ok(!isValidPathInput("foo"));
+    assert.ok(!isValidPathInput("../foo"));
+    assert.ok(!isValidPathInput(""));
   });
 
-  it("ignores an untrusted project file", () => {
-    const g = join(tmp, "global.json");
-    const p = join(tmp, "project.json");
-    write(g, JSON.stringify({ llm: { timeoutMs: 60_000 } }));
-    write(p, JSON.stringify({ llm: { timeoutMs: 1000 } }));
-    const r = load(g, p, false);
-    assert.equal(r.config.llm.timeoutMs, 60_000);
+  it("rejects globs anywhere", () => {
+    assert.ok(!isValidPathInput("~/keys/*"));
+    assert.ok(!isValidPathInput("**/.env"));
+    assert.ok(!isValidPathInput("./a[b]"));
+    assert.ok(!isValidPathInput("~/?" ));
+  });
+});
+
+describe("asPathRule", () => {
+  it("parses a valid rule", () => {
+    assert.deepEqual(asPathRule({ action: "ask", kind: "file", path: "./.env" }), {
+      action: "ask",
+      kind: "file",
+      path: "./.env",
+    });
   });
 
-  it("reports invalid JSON per scope without crashing", () => {
-    const g = join(tmp, "broken.json");
-    write(g, "{ not json");
-    const r = load(g, null, true);
-    assert.equal(r.config.llm.timeoutMs, 30_000, "defaults apply");
-    assert.equal(r.scopes[0].loaded, false);
+  it("drops invalid entries", () => {
+    assert.equal(asPathRule({ action: "run", kind: "file", path: "./x" }), null);
+    assert.equal(asPathRule({ action: "allow", kind: "tree", path: "./x" }), null);
+    assert.equal(asPathRule({ action: "allow", kind: "file", path: "x" }), null); // relative without ./
+    assert.equal(asPathRule({ action: "allow", kind: "file", path: "~/x/*" }), null); // glob
+    assert.equal(asPathRule({}), null);
+  });
+});
+
+describe("asCommandRule", () => {
+  it("parses a valid rule; exact defaults false", () => {
+    assert.deepEqual(asCommandRule({ action: "ask", raw: "npm install" }), {
+      action: "ask",
+      exact: false,
+      raw: "npm install",
+    });
+    assert.deepEqual(asCommandRule({ action: "deny", exact: true, raw: "git push --force" }), {
+      action: "deny",
+      exact: true,
+      raw: "git push --force",
+    });
+  });
+
+  it("keeps the rule when regex is broken — degrades to string matching", () => {
+    const rule = asCommandRule({ action: "deny", raw: "rm -rf", regex: "[" });
+    assert.ok(rule);
+    assert.equal(rule.regex, undefined);
+  });
+
+  it("keeps a valid regex", () => {
+    const rule = asCommandRule({ action: "ask", raw: "npm", regex: "^npm (install|i)\\b" });
+    assert.equal(rule.regex, "^npm (install|i)\\b");
+  });
+
+  it("drops invalid entries", () => {
+    assert.equal(asCommandRule({ action: "maybe", raw: "x" }), null);
+    assert.equal(asCommandRule({ action: "allow" }), null);
+    assert.equal(asCommandRule({ action: "allow", raw: "" }), null);
+  });
+});
+
+describe("mergeConfig", () => {
+  it("concatenates rules project-first over global", () => {
+    const global = normalizeConfig({
+      paths: { rules: [{ action: "deny", kind: "directory", path: "~/.ssh" }] },
+      commands: { rules: [{ action: "deny", exact: true, raw: "git push --force" }] },
+    });
+    const merged = mergeConfig(global, {
+      paths: { rules: [{ action: "allow", kind: "directory", path: "~/repos" }] },
+    });
+    assert.deepEqual(merged.paths.rules.map((r) => r.path), ["~/repos", "~/.ssh"]);
+    assert.deepEqual(merged.commands.rules, global.commands.rules);
+  });
+
+  it("scalars are project-overrides-global", () => {
+    const global = normalizeConfig({ strict: true, commands: { promptWhen: "blocked" } });
+    const merged = mergeConfig(global, { strict: false, commands: { promptWhen: "everytime" } });
+    assert.equal(merged.strict, false);
+    assert.equal(merged.commands.promptWhen, "everytime");
+    // invalid project values fall back to global
+    const merged2 = mergeConfig(global, { strict: "yes", commands: { promptWhen: "sometimes" } });
+    assert.equal(merged2.strict, true);
+    assert.equal(merged2.commands.promptWhen, "blocked");
+  });
+
+  it("llm + hooks + audit merge per field", () => {
+    const global = normalizeConfig({ llm: { provider: "a", model: "m1" } });
+    const merged = mergeConfig(global, { llm: { provider: "b" }, hooks: { afterPrompt: "echo hi" }, audit: { enabled: false } });
+    assert.equal(merged.llm.provider, "b");
+    assert.equal(merged.llm.model, "m1");
+    assert.equal(merged.hooks.afterPrompt, "echo hi");
+    assert.equal(merged.audit.enabled, false);
+  });
+});
+
+describe("loadConfig", () => {
+  it("defaults when both files are missing; scopes report not-loaded", () => {
+    const dir = tmp();
+    const r = loadConfig({ globalPath: join(dir, "g.json"), projectPath: join(dir, "p.json"), trusted: true });
+    assert.deepEqual(r.config, DEFAULT_CONFIG);
+    assert.equal(r.scopes.length, 2);
+    assert.ok(r.scopes.every((s) => !s.loaded));
+    assert.deepEqual(r.rules, { paths: { project: [], global: [] }, commands: { project: [], global: [] } });
+  });
+
+  it("reports invalid JSON per scope and falls back to defaults", () => {
+    const dir = tmp();
+    writeFileSync(join(dir, "g.json"), "{broken");
+    const r = loadConfig({ globalPath: join(dir, "g.json"), projectPath: null, trusted: true });
     assert.match(r.scopes[0].error ?? "", /invalid JSON/);
+    assert.deepEqual(r.config, DEFAULT_CONFIG);
   });
 
-  it("reports a non-object config per scope", () => {
-    const g = join(tmp, "array.json");
-    write(g, "[1,2]");
-    const r = load(g, null, true);
-    assert.equal(r.scopes[0].loaded, false);
-    assert.match(r.scopes[0].error ?? "", /must be a JSON object/);
+  it("skips the project scope for untrusted projects", () => {
+    const dir = tmp();
+    writeFileSync(join(dir, "p.json"), JSON.stringify({ strict: false }));
+    const r = loadConfig({ globalPath: join(dir, "g.json"), projectPath: join(dir, "p.json"), trusted: false });
+    assert.deepEqual(r.config, DEFAULT_CONFIG);
+    assert.equal(r.scopes[1].skipped, true);
   });
-});
 
-describe("stampSchema", () => {
-  it("prepends $schema", () => {
-    const stamped = stampSchema({ enabled: false });
-    assert.deepEqual(Object.keys(stamped), ["$schema", "enabled"]);
-    assert.equal(stamped.$schema, SCHEMA_URL);
+  it("loads scoped rules: project + global views", () => {
+    const dir = tmp();
+    writeFileSync(join(dir, "g.json"), JSON.stringify({ paths: { rules: [{ action: "deny", kind: "directory", path: "~/.ssh" }] } }));
+    writeFileSync(join(dir, "p.json"), JSON.stringify({ paths: { rules: [{ action: "allow", kind: "file", path: "./x" }] } }));
+    const r = loadConfig({ globalPath: join(dir, "g.json"), projectPath: join(dir, "p.json"), trusted: true });
+    assert.deepEqual(r.rules.paths.project.map((x) => x.path), ["./x"]);
+    assert.deepEqual(r.rules.paths.global.map((x) => x.path), ["~/.ssh"]);
+    // merged config: project first, then global
+    assert.deepEqual(r.config.paths.rules.map((x) => x.path), ["./x", "~/.ssh"]);
   });
 });

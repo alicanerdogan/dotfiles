@@ -1,239 +1,263 @@
-/**
- * Prompt flow tests: menu construction, allow once/session, deny paths,
- * reason capture, rule follow-up gating, dismissal and UI-failure safety.
- */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { runPromptFlow, type PromptFlowOptions } from "./prompt.ts";
-import { MemoryGrantStore } from "./grants.ts";
+import { MENU_OPTIONS, oneLine, runPromptFlow, runSuggestionStep, type PromptFlowOptions, type SuggestionStepOptions } from "./prompt.ts";
+import { SessionState } from "./session.ts";
 import { FakeUi } from "./testing.ts";
+import type { RuleKind } from "./rules.ts";
 
-function opts(partial: Partial<PromptFlowOptions> = {}): { ui: FakeUi } & PromptFlowOptions {  const ui = new FakeUi();
-  return {
+function flow(over: Partial<PromptFlowOptions> = {}): { opts: PromptFlowOptions; ui: FakeUi; session: SessionState; saved: { kind: RuleKind; value: string; scope: "project" | "global"; pathKind?: string }[] } {
+  const ui = new FakeUi();
+  const session = new SessionState();
+  const saved: { kind: RuleKind; value: string; scope: "project" | "global"; pathKind?: string }[] = [];
+  const base: PromptFlowOptions = {
     ui,
-    reason: "rm -rf (recursive force delete)",
-    grantKey: "bash:rm -rf /x",
-    grants: new MemoryGrantStore(),
-    prompting: { askReasonOnDeny: true, sessionGrants: true },
-    command: "rm -rf /x",
-    saveRule: async () => true,
-    ...partial,
+    reason: "test reason",
+    sessionKey: "bash:ls -la",
+    session,
+    saveRule: async (kind, value, scope, o) => {
+      saved.push({ kind, value, scope, ...(o?.pathKind ? { pathKind: o.pathKind } : {}) });
+      return true;
+    },
   };
+  return { opts: { ...base, ...over }, ui, session, saved };
 }
 
-describe("runPromptFlow menu", () => {
-  it("offers Allow for session only when sessionGrants is on", async () => {
-    const o = opts();
-    o.ui.selects.push("Deny");
-    await runPromptFlow(o);
-    assert.deepEqual(o.ui.selectCalls[0].options, ["Allow once", "Allow for session", "Deny", "Deny with reason"]);
-
-    const o2 = opts({ prompting: { askReasonOnDeny: true, sessionGrants: false } });
-    o2.ui.selects.push("Deny");
-    await runPromptFlow(o2);
-    assert.deepEqual(o2.ui.selectCalls[0].options, ["Allow once", "Deny", "Deny with reason"]);
+describe("oneLine", () => {
+  it("collapses multi-line commands to a single line", () => {
+    assert.equal(oneLine("blocked:\n  git push\n  --force"), "blocked: git push --force");
   });
 
-  it("shows the reason in the prompt title", async () => {
-    const o = opts({ reason: "disk formatting" });
-    o.ui.selects.push("Deny");
-    await runPromptFlow(o);
-    assert.equal(o.ui.selectCalls[0].title, "Immunity: disk formatting");
+  it("truncates overly long reasons with an ellipsis", () => {
+    const long = "x".repeat(500);
+    const out = oneLine(long);
+    assert.equal(out.length, 200);
+    assert.ok(out.endsWith("…"));
   });
 
-  it("appends protect/allow/block options from the model's suggestions", async () => {
-    const o = opts({
-      suggestions: {
-        paths: ["~/.ssh/id_rsa"],
-        commands: [{ raw: "git push --force", general: "git push" }],
+  it("leaves short reasons untouched", () => {
+    assert.equal(oneLine("path denied by rule: ~/.ssh (global)"), "path denied by rule: ~/.ssh (global)");
+  });
+});
+
+describe("runSuggestionStep", () => {
+  const sug = (paths: string[]) => ({ paths, commands: [] as { raw: string; general?: string }[] });
+
+  function flow(over: Partial<SuggestionStepOptions> = {}): { opts: SuggestionStepOptions; ui: FakeUi; session: SessionState; saved: { kind: RuleKind; value: string; scope: "project" | "global"; pathKind?: string }[] } {
+    const ui = new FakeUi();
+    const session = new SessionState();
+    const saved: { kind: RuleKind; value: string; scope: "project" | "global"; pathKind?: string }[] = [];
+    const opts: SuggestionStepOptions = {
+      ui,
+      reason: "test reason",
+      suggestions: sug([]),
+      session,
+      saveRule: async (kind, value, scope, o) => {
+        saved.push({ kind, value, scope, ...(o?.pathKind ? { pathKind: o.pathKind } : {}) });
+        return true;
       },
-    });
-    o.ui.selects.push("Deny");
-    await runPromptFlow(o);
-    assert.deepEqual(o.ui.selectCalls[0].options, [
-      "Allow once",
+      ...over,
+    };
+    return { opts, ui, session, saved };
+  }
+
+  it("offers the suggestion options per flagged path", async () => {
+    const { opts, ui } = flow({ suggestions: sug(["/a"]) });
+    ui.selects.push("Skip");
+    const r = await runSuggestionStep(opts);
+    assert.deepEqual(r, { choices: [{ action: "skip" }], protected: false, failed: false });
+    assert.equal(ui.selectCalls[0].title, "Immunity (1/1): analyzer flagged /a");
+    assert.deepEqual(ui.selectCalls[0].options, [
       "Allow for session",
-      "Deny",
-      "Deny with reason",
-      "Protect ~/.ssh/id_rsa (project)",
-      "Protect ~/.ssh/id_rsa (global)",
-      "Allow ~/.ssh/id_rsa (project)",
-      "Allow ~/.ssh/id_rsa (global)",
-      "Block git push --force",
+      "Allow for project",
+      "Allow globally",
+      "Protect for project",
+      "Protect for global",
+      "Skip",
     ]);
   });
 
-  it("returns the suggestion result when picked", async () => {
-    const o = opts({ suggestions: { paths: ["~/.ssh/id_rsa"], commands: [] } });
-    o.ui.selects.push("Allow ~/.ssh/id_rsa (global)");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "suggestion", kind: "pathAllow", value: "~/.ssh/id_rsa", scope: "global" });
+  it("Skip moves to the next path; all skipped → not protected", async () => {
+    const { opts, ui } = flow({ suggestions: sug(["/a", "/b"]) });
+    ui.selects.push("Skip", "Skip");
+    const r = await runSuggestionStep(opts);
+    assert.equal(r.protected, false);
+    assert.deepEqual(r.choices, [{ action: "skip" }, { action: "skip" }]);
+  });
 
-    const o2 = opts({ suggestions: { paths: [], commands: [{ raw: "git push --force" }] } });
-    o2.ui.selects.push("Block git push --force");
-    const r2 = await runPromptFlow(o2);
-    assert.deepEqual(r2, { action: "suggestion", kind: "autoDeny", value: "git push --force", scope: "project" });
+  it("Allow for session registers a session statement", async () => {
+    const { opts, ui, session } = flow({ suggestions: sug(["/home/u/repos"]) });
+    ui.selects.push("Allow for session");
+    const r = await runSuggestionStep(opts);
+    assert.equal(r.protected, false);
+    assert.ok(session.isAllowed("file:/home/u/repos"));
+    assert.deepEqual(r.choices, [{ action: "allow", scope: "session", value: "/home/u/repos", pathKind: "file" }]);
+  });
+
+  it("Allow for project writes a pathAllow rule; glob suggestions are filtered and deduped", async () => {
+    const { opts, ui, saved } = flow({ suggestions: sug(["/a", "/a", "~/x/*"]) });
+    ui.selects.push("Allow for project");
+    const r = await runSuggestionStep(opts);
+    assert.equal(r.protected, false);
+    assert.equal(ui.selectCalls.length, 1, "one dialog per concrete unique path");
+    assert.deepEqual(saved, [{ kind: "pathAllow", value: "/a", scope: "project", pathKind: "file" }]);
+  });
+
+  it("Protect writes a pathDeny rule, blocks the command, and stops the loop", async () => {
+    const { opts, ui, saved } = flow({ suggestions: sug(["/a", "/b"]) });
+    ui.selects.push("Protect for global");
+    const r = await runSuggestionStep(opts);
+    assert.deepEqual(r, { choices: [{ action: "protect", scope: "global", value: "/a", pathKind: "file", persisted: true }], protected: true, protectedPath: "/a", failed: false });
+    assert.deepEqual(saved, [{ kind: "pathDeny", value: "/a", scope: "global", pathKind: "file" }]);
+    assert.equal(ui.selectCalls.length, 1, "no dialog for /b — the command is already resolved");
+  });
+
+  it("kind comes from pathKindFor", async () => {
+    const { opts, ui, saved } = flow({ suggestions: sug(["/a"]), pathKindFor: () => "directory" });
+    ui.selects.push("Allow globally");
+    await runSuggestionStep(opts);
+    assert.deepEqual(saved, [{ kind: "pathAllow", value: "/a", scope: "global", pathKind: "directory" }]);
+  });
+
+  it("dismissed and broken prompts fail safe (block the command)", async () => {
+    const { opts, ui } = flow({ suggestions: sug(["/a"]) });
+    ui.selects.push(undefined);
+    const r = await runSuggestionStep(opts);
+    assert.equal(r.failed, true);
+    assert.equal(r.protected, true);
+
+    const { opts: opts2, ui: ui2 } = flow({ suggestions: sug(["/a"]) });
+    ui2.failNext("select");
+    const r2 = await runSuggestionStep(opts2);
+    assert.equal(r2.failed, true);
   });
 });
 
-describe("allow paths", () => {
-  it("Allow once proceeds without recording a grant", async () => {
-    const o = opts();
-    o.ui.selects.push("Allow once");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "allow", grant: "once" });
-    assert.equal(o.grants.check(o.grantKey), null, "once is literally one call");
+describe("runPromptFlow — six options", () => {
+  it("offers exactly the six menu options", async () => {
+    const { opts, ui } = flow();
+    ui.selects.push(undefined);
+    await runPromptFlow(opts);
+    assert.deepEqual(ui.selectCalls[0].options, [...MENU_OPTIONS]);
+    assert.equal(ui.selectCalls[0].title, "Immunity: test reason");
   });
 
-  it("Allow for session records a session grant", async () => {
-    const o = opts();
-    o.ui.selects.push("Allow for session");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "allow", grant: "session" });
-    assert.equal(o.grants.check(o.grantKey), "session");
+  it("menu title is one line even for multi-line reasons", async () => {
+    const { opts, ui } = flow({ reason: "blocked: find ~/repos\n  -maxdepth 1\n  -type d" });
+    ui.selects.push(undefined);
+    await runPromptFlow(opts);
+    assert.equal(ui.selectCalls[0].title, "Immunity: blocked: find ~/repos -maxdepth 1 -type d");
+    assert.ok(!ui.selectCalls[0].title.includes("\n"));
   });
 
-  it("Always allow persists a command grant and allows the call", async () => {
-    const persisted: [string, string][] = [];
-    const o = opts({ persistGrant: async (k, v) => (persisted.push([k, v]), true) });
-    o.ui.selects.push("Always allow");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "allow", grant: "always", persisted: true });
-    assert.deepEqual(persisted, [["command", "rm -rf /x"]]);
+  it("Allow for session → session statement, no rule write", async () => {
+    const { opts, ui, session, saved } = flow();
+    ui.selects.push("Allow for session");
+    const r = await runPromptFlow(opts);
+    assert.deepEqual(r, { action: "allow", scope: "session", pathKind: undefined, pathValue: undefined });
+    assert.ok(session.isAllowed("bash:ls -la"));
+    assert.deepEqual(saved, []);
   });
 
-  it("Always allow for a file request persists the resolved path", async () => {
-    const persisted: [string, string][] = [];
-    const o = opts({ command: undefined, protectPath: "/repo/.env", persistGrant: async (k, v) => (persisted.push([k, v]), true) });
-    o.ui.selects.push("Always allow");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "allow", grant: "always", persisted: true });
-    assert.deepEqual(persisted, [["path", "/repo/.env"]]);
+  it("Allow for project (command) → exact allow rule", async () => {
+    const { opts, ui, saved } = flow({ command: "npm install lodash" });
+    ui.selects.push("Allow for project");
+    const r = await runPromptFlow(opts);
+    assert.deepEqual(r, { action: "allow", scope: "project", persisted: true, pathKind: undefined, pathValue: undefined });
+    assert.deepEqual(saved, [{ kind: "commandAllow", value: "npm install lodash", scope: "project" }]);
   });
 
-  it("Always allow still allows when persistence fails", async () => {
-    const o = opts({ persistGrant: async () => false });
-    o.ui.selects.push("Always allow");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "allow", grant: "always", persisted: false });
+  it("Allow globally (path) — directory target skips the follow-up", async () => {
+    const { opts, ui, saved } = flow({ path: "~/repos", pathKind: "directory" });
+    ui.selects.push("Allow globally");
+    const r = await runPromptFlow(opts);
+    assert.deepEqual(r, { action: "allow", scope: "global", persisted: true, pathKind: "directory", pathValue: "~/repos" });
+    assert.deepEqual(saved, [{ kind: "pathAllow", value: "~/repos", scope: "global", pathKind: "directory" }]);
+    assert.equal(ui.selectCalls.length, 1, "no follow-up for directory targets");
   });
 
-  it("hides Always allow when no persistGrant hook is wired", async () => {
-    const o = opts();
-    o.ui.selects.push("Deny");
-    await runPromptFlow(o);
-    assert.ok(!o.ui.selectCalls[0].options.includes("Always allow"));
+  it("path rule on a file target: follow-up can widen to the containing directory", async () => {
+    const { opts, ui, saved } = flow({ path: "~/.config/app.conf", pathKind: "file" });
+    ui.selects.push("Allow for project", "The whole directory (recursive)");
+    const r = await runPromptFlow(opts);
+    assert.equal(r.pathKind, "directory");
+    assert.equal(r.pathValue, "~/.config");
+    assert.deepEqual(saved, [{ kind: "pathAllow", value: "~/.config", scope: "project", pathKind: "directory" }]);
+  });
+
+  it("path rule on a file target: dismissed follow-up stays a file rule", async () => {
+    const { opts, ui, saved } = flow({ path: "~/.config/app.conf", pathKind: "file" });
+    ui.selects.push("Allow for project", undefined);
+    const r = await runPromptFlow(opts);
+    assert.equal(r.pathKind, "file");
+    assert.equal(r.pathValue, "~/.config/app.conf");
+    assert.deepEqual(saved, [{ kind: "pathAllow", value: "~/.config/app.conf", scope: "project", pathKind: "file" }]);
+  });
+
+  it("Allow for session on a directory choice covers descendants", async () => {
+    const { opts, ui, session } = flow({ path: "~/repos/alicancodes/lib/a.ts", pathKind: "file", sessionKey: "file:/home/u/repos/alicancodes/lib/a.ts" });
+    ui.selects.push("Allow for session", "The whole directory (recursive)");
+    const r = await runPromptFlow(opts);
+    assert.deepEqual(r, { action: "allow", scope: "session", pathKind: "directory", pathValue: "~/repos/alicancodes/lib" });
+    assert.ok(session.isAllowed("file:/home/u/repos/alicancodes/lib"), "directory statement registered");
+    assert.ok(session.isAllowed("file:/home/u/repos/alicancodes/lib/other/b.ts"), "descendant covered");
+    assert.ok(!session.isAllowed("file:/home/u/repos/alicancodes/src/x.ts"), "sibling not covered");
+  });
+
+  it("Block for project → deny rule + reason ask (No → no reason)", async () => {
+    const { opts, ui, saved } = flow({ command: "git push --force" });
+    ui.selects.push("Block for project", "No");
+    const r = await runPromptFlow(opts);
+    assert.deepEqual(r, { action: "block", scope: "project", persisted: true, userReason: undefined, pathKind: undefined, pathValue: undefined });
+    assert.deepEqual(saved, [{ kind: "commandDeny", value: "git push --force", scope: "project" }]);
+  });
+
+  it("Block globally → deny rule + user reason overwrites (Yes → input)", async () => {
+    const { opts, ui, saved } = flow({ command: "git push --force" });
+    ui.selects.push("Block globally", "Yes");
+    ui.inputs.push("never force-push to main");
+    const r = await runPromptFlow(opts);
+    assert.deepEqual(r, { action: "block", scope: "global", persisted: true, userReason: "never force-push to main", pathKind: undefined, pathValue: undefined });
+    assert.deepEqual(saved, [{ kind: "commandDeny", value: "git push --force", scope: "global" }]);
+  });
+
+  it("Block for session → session deny + reason ask", async () => {
+    const { opts, ui, session } = flow({ command: "rm -rf /", sessionKey: "bash:rm -rf /" });
+    ui.selects.push("Block for session", "No");
+    const r = await runPromptFlow(opts);
+    assert.equal(r.action, "block");
+    assert.equal(r.scope, "session");
+    assert.ok(session.isDenied("bash:rm -rf /"));
+  });
+
+  it("persistence failure is reported (persisted: false) but never throws", async () => {
+    const { opts, ui } = flow({ command: "x", saveRule: async () => false });
+    ui.selects.push("Allow for project");
+    const r = await runPromptFlow(opts);
+    assert.deepEqual(r, { action: "allow", scope: "project", persisted: false, pathKind: undefined, pathValue: undefined });
   });
 });
 
-describe("deny paths", () => {
-  it("Deny blocks with no reason", async () => {
-    const o = opts();
-    o.ui.selects.push("Deny");
-    assert.deepEqual(await runPromptFlow(o), { action: "deny" });
+describe("runPromptFlow — safety on broken prompts", () => {
+  it("dismissed prompt → block for session", async () => {
+    const { opts, ui } = flow();
+    ui.selects.push(undefined);
+    const r = await runPromptFlow(opts);
+    assert.deepEqual(r, { action: "block", scope: "session" });
   });
 
-  it("dismissing the menu denies (safety-first)", async () => {
-    const o = opts();
-    o.ui.selects.push(undefined);
-    assert.deepEqual(await runPromptFlow(o), { action: "deny" });
+  it("UI failure → block for session, nothing leaks through", async () => {
+    const { opts, ui } = flow();
+    ui.failNext("select");
+    const r = await runPromptFlow(opts);
+    assert.deepEqual(r, { action: "block", scope: "session" });
   });
 
-  it("a UI failure denies", async () => {
-    const o = opts();
-    o.ui.failNext("select");
-    assert.deepEqual(await runPromptFlow(o), { action: "deny" });
-  });
-
-  it("Deny with reason captures the reason", async () => {
-    const o = opts();
-    o.ui.selects.push("Deny with reason");
-    o.ui.inputs.push("I'll fix it manually");
-    const r = await runPromptFlow(o);
-    assert.equal(r.action, "deny");
-    assert.equal(r.userReason, "I'll fix it manually");
-  });
-
-  it("skips the reason follow-up when the input is dismissed", async () => {
-    const o = opts();
-    o.ui.selects.push("Deny with reason");
-    o.ui.inputs.push(undefined);
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "deny", userReason: undefined });
-    assert.equal(o.ui.selectCalls.length, 1, "no remember-as-rule menu without a reason");
-  });
-
-  it("an input failure still denies without a reason", async () => {
-    const o = opts();
-    o.ui.selects.push("Deny with reason");
-    o.ui.failNext("input");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "deny", userReason: undefined });
-  });
-});
-
-describe("remember-as-rule follow-up", () => {
-  it("runs only when a reason was given and askReasonOnDeny is on", async () => {
-    const o = opts({ prompting: { askReasonOnDeny: false, sessionGrants: true } });
-    o.ui.selects.push("Deny with reason");
-    o.ui.inputs.push("no");
-    const r = await runPromptFlow(o);
-    assert.equal(r.action, "deny");
-    assert.equal(o.ui.selectCalls.length, 1, "follow-up menu skipped");
-  });
-
-  it("offers the pattern rule for bash and saves the raw command", async () => {
-    const saved: [string, string][] = [];
-    const o = opts({ saveRule: async (k, v) => (saved.push([k, v]), true) });
-    o.ui.selects.push("Deny with reason", "Block this command pattern");
-    o.ui.inputs.push("stop doing that");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "deny", userReason: "stop doing that", savedRule: "autoDeny" });
-    assert.deepEqual(saved, [["autoDeny", "rm -rf /x"]]);
-  });
-
-  it("offers the path rule for file requests and saves the resolved target", async () => {
-    const saved: [string, string][] = [];
-    const o = opts({
-      command: undefined,
-      protectPath: "/repo/.env",
-      saveRule: async (k, v) => (saved.push([k, v]), true),
-    });
-    o.ui.selects.push("Deny with reason", "Protect this path");
-    o.ui.inputs.push("secret file");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "deny", userReason: "secret file", savedRule: "path" });
-    assert.deepEqual(saved, [["path", "/repo/.env"]]);
-  });
-
-  it("gates options on the request kind", async () => {
-    const o = opts({ command: undefined, protectPath: "/repo/.env" });
-    o.ui.selects.push("Deny with reason", "No");
-    o.ui.inputs.push("x");
-    await runPromptFlow(o);
-    assert.deepEqual(o.ui.selectCalls[1].options, ["No", "Protect this path"]);
-
-    const o2 = opts();
-    o2.ui.selects.push("Deny with reason", "No");
-    o2.ui.inputs.push("x");
-    await runPromptFlow(o2);
-    assert.deepEqual(o2.ui.selectCalls[1].options, ["No", "Block this command pattern"]);
-  });
-
-  it("does not report savedRule when the save failed", async () => {
-    const o = opts({ saveRule: async () => false });
-    o.ui.selects.push("Deny with reason", "Block this command pattern");
-    o.ui.inputs.push("x");
-    const r = await runPromptFlow(o);
-    assert.equal(r.action, "deny");
-    assert.equal(r.savedRule, undefined);
-  });
-
-  it("'No' records nothing", async () => {
-    const o = opts();
-    o.ui.selects.push("Deny with reason", "No");
-    o.ui.inputs.push("x");
-    const r = await runPromptFlow(o);
-    assert.deepEqual(r, { action: "deny", userReason: "x" });
+  it("reason-ask failure degrades to no reason", async () => {
+    const { opts, ui } = flow({ command: "x" });
+    ui.selects.push("Block for project");
+    ui.failNext("select"); // the reason confirm fails
+    const r = await runPromptFlow(opts);
+    assert.equal(r.action, "block");
+    assert.equal(r.userReason, undefined);
   });
 });

@@ -95,20 +95,20 @@ describe("buildArgs — verified subprocess invocation", () => {
   it("appends the policy line when provided", () => {
     const args = buildArgs("cat .env", {
       cwd: "/repo",
-      policy: "paths protected [**/.env* (modify)]; paths allowed [~/keys (directory)]; commands allowed [npm install lodash]",
+      policy: "project rules (higher priority): paths [ask file ./.env]; global rules: commands [deny (exact) git push --force]",
     });
     assert.equal(
       args[args.length - 1],
-      "Command: cat .env\nProject cwd: /repo\nPolicy: paths protected [**/.env* (modify)]; paths allowed [~/keys (directory)]; commands allowed [npm install lodash]",
+      "Command: cat .env\nProject cwd: /repo\nPolicy: project rules (higher priority): paths [ask file ./.env]; global rules: commands [deny (exact) git push --force]",
     );
     assert.equal(buildArgs("ls -la", { cwd: "/repo" }).at(-1), "Command: ls -la\nProject cwd: /repo", "no policy → no line");
   });
 
-  it("inserts provider/model/append-system-prompt before --system-prompt", () => {
+  it("inserts provider/model/userPrompt before --system-prompt", () => {
     const args = buildArgs("git status", {
       provider: "openai",
       model: "gpt-4o",
-      appendSystemPrompt: "extra instructions",
+      userPrompt: "extra instructions",
       systemPrompt: "persona",
     });
     const idx = (flag: string) => args.indexOf(flag);

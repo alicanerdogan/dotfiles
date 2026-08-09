@@ -1,111 +1,105 @@
 /**
- * pi-immunity config: types, defaults, normalization, scope merge, loader.
+ * pi-immunity config (2025-08 rework): types, defaults, normalization,
+ * scope merge, loader.
  *
  * Pure module — no pi imports, so it runs under plain `node --test`.
  * The extension entry (index.ts) supplies the real paths (getAgentDir,
  * CONFIG_DIR_NAME, ctx.cwd) and the trust flag (ctx.isProjectTrusted()).
  *
- * Merge semantics (design §3): scalar sections are project-overrides-global;
- * list sections are unions with global entries first (a project file can
- * never weaken a global protection); `enabled` is AND (either scope can
- * switch immunity off entirely). `$schema` is tolerated on read and stamped
- * on save (immunity.schema.json, hand-maintained).
+ * Shape (design updates doc):
+ *   strict        — LLM unavailable AND no rule match → prompt (true, default) or allow
+ *   paths.rules   — { action: ask|allow|deny, kind: file|directory, path }
+ *                    no globs; `~` allowed; relative must start with ./
+ *                    directory = recursive; hard defaults: outside cwd + gitignored = block
+ *   commands.rules— { action: allow|deny|ask, exact?, raw, regex? }
+ *                    regex is deterministic-only, never fed to the LLM
+ *   commands.promptWhen — 'asked' | 'blocked' (default) | 'everytime'
+ *   llm           — disabled (opt-out, default on), provider/model/timeoutMs/userPrompt/piPath
+ *   hooks.afterPrompt — user command run when a prompt opens
+ *   audit.enabled — default on
+ *
+ * Merge (local overrules global): scalar sections are project-overrides-global;
+ * rules are concatenated with PROJECT rules first (priority by order — both
+ * for deterministic evaluation and for the LLM policy feed). Conflicts are
+ * resolved by the evaluator (safest action wins); the LLM receives the
+ * ordered list and resolves conflicts itself. `$schema` is tolerated on read
+ * but never stamped on write.
  */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
-export interface PathRule {
-  pattern: string;
-  mode: "read" | "modify";
-  onlyIfExists?: boolean;
-  regex?: boolean;
-}
+export type PathAction = "ask" | "allow" | "deny";
+export type CommandAction = "allow" | "deny" | "ask";
+export type PromptWhen = "asked" | "blocked" | "everytime";
 
-export interface PathAllow {
+export interface PathRule {
+  action: PathAction;
   kind: "file" | "directory";
   path: string;
 }
 
-export interface PathnameRules {
-  protected: PathRule[];
-  allowed: PathAllow[];
+export interface CommandRule {
+  action: CommandAction;
+  /** true → full-string match; default (false) → substring match */
+  exact: boolean;
+  raw: string;
+  /** deterministic-only matcher; never fed to the LLM */
+  regex?: string;
 }
 
-export interface CommandRules {
-  patterns: string[];
-  autoDenyPatterns: string[];
-  /** exact command strings always allowed (persisted "always" grants) */
-  allowed: string[];
-  useBuiltinMatchers: boolean;
+export interface PathsConfig {
+  rules: PathRule[];
+}
+
+export interface CommandsConfig {
+  rules: CommandRule[];
+  promptWhen: PromptWhen;
 }
 
 export interface LlmConfig {
-  enabled: boolean;
+  /** opt-out: the analysis layer is enabled unless disabled */
+  disabled: boolean;
   provider: string;
   model: string;
-  appendSystemPrompt: string;
+  /** user-authored policy text appended to the analyzer system prompt */
+  userPrompt: string;
   piPath: string;
   timeoutMs: number;
-  autoDeny: boolean;
-  /** debug mode: an ALLOWED verdict prompts the user (showing the verdict) instead of auto-allowing */
-  confirm: boolean;
 }
 
-export interface TreeSitterConfig {
-  binPath: string;
-  grammarDir: string | null;
-}
-
-export interface PromptingConfig {
-  requireConfirmation: boolean;
-  askReasonOnDeny: boolean;
-  sessionGrants: boolean;
-  onPromptCommand: string;
+export interface HooksConfig {
+  /** bash command run right before an approval prompt opens */
+  afterPrompt: string;
 }
 
 export interface AuditConfig {
   enabled: boolean;
-  file: string;
 }
 
 export interface ImmunityConfig {
-  version: 1;
-  enabled: boolean;
-  pathnames: PathnameRules;
-  commands: CommandRules;
+  strict: boolean;
+  paths: PathsConfig;
+  commands: CommandsConfig;
   llm: LlmConfig;
-  treeSitter: TreeSitterConfig;
-  prompting: PromptingConfig;
+  hooks: HooksConfig;
   audit: AuditConfig;
 }
 
 export const DEFAULT_CONFIG: ImmunityConfig = {
-  version: 1,
-  enabled: true,
-  pathnames: { protected: [], allowed: [] },
-  commands: { patterns: [], autoDenyPatterns: [], allowed: [], useBuiltinMatchers: true },
+  strict: true,
+  paths: { rules: [] },
+  commands: { rules: [], promptWhen: "blocked" },
   llm: {
-    enabled: false,
+    disabled: false,
     provider: "",
     model: "",
-    appendSystemPrompt: "",
+    userPrompt: "",
     piPath: "",
     timeoutMs: 30_000,
-    autoDeny: false,
-    confirm: false,
   },
-  treeSitter: { binPath: "tree-sitter", grammarDir: null },
-  prompting: {
-    requireConfirmation: true,
-    askReasonOnDeny: true,
-    sessionGrants: true,
-    onPromptCommand: "",
-  },
-  audit: { enabled: true, file: "" },
+  hooks: { afterPrompt: "" },
+  audit: { enabled: true },
 };
-
-/** Paths of the `$schema` target, resolved next to this module's sibling schema file. */
-export const SCHEMA_URL = new URL("../immunity.schema.json", import.meta.url).href;
 
 export function defaultGlobalConfigPath(home: string): string {
   return join(home, ".pi", "agent", "immunity.json");
@@ -113,11 +107,6 @@ export function defaultGlobalConfigPath(home: string): string {
 
 export function defaultProjectConfigPath(cwd: string, configDirName = ".pi"): string {
   return join(cwd, configDirName, "immunity.json");
-}
-
-/** Stamp `$schema` first so editors pick it up; returns a new object. */
-export function stampSchema(raw: Record<string, unknown>): Record<string, unknown> {
-  return { $schema: SCHEMA_URL, ...raw };
 }
 
 /* ------------------------------------------------------------------ */
@@ -136,8 +125,12 @@ function asBoolean(x: unknown): boolean | null {
   return typeof x === "boolean" ? x : null;
 }
 
-function asStringArray(x: unknown): string[] {
-  return Array.isArray(x) ? x.filter((e): e is string => typeof e === "string") : [];
+const GLOB_METACHARS = /[*?[\]]/;
+
+/** Path input contract: no globs; `~` allowed; relative must start with `./`. */
+export function isValidPathInput(path: string): boolean {
+  if (!path || GLOB_METACHARS.test(path)) return false;
+  return path === "~" || path.startsWith("~/") || path.startsWith("./") || path.startsWith("/");
 }
 
 function isValidRegExp(s: string): boolean {
@@ -149,32 +142,32 @@ function isValidRegExp(s: string): boolean {
   }
 }
 
-function asPathRule(x: unknown): PathRule | null {
-  const r = asRecord(x);
-  const pattern = r ? asString(r.pattern) : null;
-  const mode = r && r.mode === "read" ? "read" : r && r.mode === "modify" ? "modify" : null;
-  const regex = r ? asBoolean(r.regex) ?? false : false;
-  if (!r || !pattern || !mode) return null;
-  if (regex && !isValidRegExp(pattern)) return null; // broken regex rules are dropped at load
-  return {
-    pattern,
-    mode,
-    onlyIfExists: asBoolean(r.onlyIfExists) ?? false,
-    regex,
-  };
-}
-
-function asPathAllow(x: unknown): PathAllow | null {
+export function asPathRule(x: unknown): PathRule | null {
   const r = asRecord(x);
   if (!r) return null;
+  const action = r.action === "ask" ? "ask" : r.action === "allow" ? "allow" : r.action === "deny" ? "deny" : null;
   const kind = r.kind === "file" ? "file" : r.kind === "directory" ? "directory" : null;
   const path = asString(r.path);
-  if (!kind || !path) return null;
-  return { kind, path };
+  if (!action || !kind || !path || !isValidPathInput(path)) return null;
+  return { action, kind, path };
+}
+
+export function asCommandRule(x: unknown): CommandRule | null {
+  const r = asRecord(x);
+  if (!r) return null;
+  const action = r.action === "allow" ? "allow" : r.action === "deny" ? "deny" : r.action === "ask" ? "ask" : null;
+  const raw = asString(r.raw);
+  if (!action || !raw) return null;
+  const rule: CommandRule = { action, exact: asBoolean(r.exact) ?? false, raw };
+  // broken regex degrades to string matching per `exact` (never silently
+  // drops the rule — a deny rule must not vanish because of a typo)
+  const regex = asString(r.regex);
+  if (regex && isValidRegExp(regex)) rule.regex = regex;
+  return rule;
 }
 
 /* ------------------------------------------------------------------ */
-/* Scope merge (raw project fields over the normalized global config)  */
+/* Scope merge                                                         */
 /* ------------------------------------------------------------------ */
 
 function asBooleanOr(x: Record<string, unknown> | null, key: string, fallback: boolean): boolean {
@@ -192,72 +185,58 @@ function asPositiveNumberOr(x: Record<string, unknown> | null, key: string, fall
   return typeof v === "number" && v > 0 ? v : fallback;
 }
 
+function asPromptWhen(x: Record<string, unknown> | null, fallback: PromptWhen): PromptWhen {
+  const v = x ? x["promptWhen"] : undefined;
+  return v === "asked" || v === "blocked" || v === "everytime" ? v : fallback;
+}
+
+function rulesOf(section: Record<string, unknown> | null, key: string): unknown[] {
+  return section && Array.isArray(section[key]) ? section[key] : [];
+}
+
 /**
- * Merge a raw project config over the normalized global config.
- * - Scalar fields: project value when present and valid, else keep global.
- * - List fields: union, global entries first — a project file cannot
- *   weaken a global protection (or drop a global pattern).
- * - `enabled`: AND — a project can switch immunity off locally, but can
- *   never re-enable a globally-disabled extension (global is the root of
- *   trust).
+ * Merge a raw project config over a normalized global config.
+ * - Scalars: project value when present and valid, else keep global.
+ * - Rules: union, PROJECT entries first — project rules overrule global
+ *   rules by evaluation order, and the LLM policy feed lists them in the
+ *   same priority order.
  */
 export function mergeConfig(global: ImmunityConfig, projectRaw: Record<string, unknown> | null): ImmunityConfig {
   if (!projectRaw) return global;
-  const p = asRecord(projectRaw.pathnames);
+  const p = asRecord(projectRaw.paths);
   const pc = asRecord(projectRaw.commands);
   const pl = asRecord(projectRaw.llm);
-  const pt = asRecord(projectRaw.treeSitter);
-  const pp = asRecord(projectRaw.prompting);
+  const ph = asRecord(projectRaw.hooks);
   const pa = asRecord(projectRaw.audit);
 
   return {
-    version: 1,
-    enabled: global.enabled && asBooleanOr(projectRaw, "enabled", true),
-    pathnames: {
-      protected: [
-        ...global.pathnames.protected,
-        ...(p && Array.isArray(p.protected) ? p.protected.map(asPathRule).filter((e): e is PathRule => e !== null) : []),
-      ],
-      allowed: [
-        ...global.pathnames.allowed,
-        ...(p && Array.isArray(p.allowed) ? p.allowed.map(asPathAllow).filter((e): e is PathAllow => e !== null) : []),
+    strict: asBooleanOr(projectRaw, "strict", global.strict),
+    paths: {
+      rules: [
+        ...rulesOf(p, "rules").map(asPathRule).filter((e): e is PathRule => e !== null),
+        ...global.paths.rules,
       ],
     },
     commands: {
-      patterns: [...global.commands.patterns, ...(pc ? asStringArray(pc.patterns) : [])],
-      autoDenyPatterns: [...global.commands.autoDenyPatterns, ...(pc ? asStringArray(pc.autoDenyPatterns) : [])],
-      allowed: [...global.commands.allowed, ...(pc ? asStringArray(pc.allowed) : [])],
-      useBuiltinMatchers: asBooleanOr(pc, "useBuiltinMatchers", global.commands.useBuiltinMatchers),
+      rules: [
+        ...rulesOf(pc, "rules").map(asCommandRule).filter((e): e is CommandRule => e !== null),
+        ...global.commands.rules,
+      ],
+      promptWhen: asPromptWhen(pc, global.commands.promptWhen),
     },
     llm: {
-      enabled: asBooleanOr(pl, "enabled", global.llm.enabled),
+      disabled: asBooleanOr(pl, "disabled", global.llm.disabled),
       provider: asStringOr(pl, "provider", global.llm.provider),
       model: asStringOr(pl, "model", global.llm.model),
-      appendSystemPrompt: asStringOr(pl, "appendSystemPrompt", global.llm.appendSystemPrompt),
+      userPrompt: asStringOr(pl, "userPrompt", global.llm.userPrompt),
       piPath: asStringOr(pl, "piPath", global.llm.piPath),
       timeoutMs: asPositiveNumberOr(pl, "timeoutMs", global.llm.timeoutMs),
-      autoDeny: asBooleanOr(pl, "autoDeny", global.llm.autoDeny),
-      confirm: asBooleanOr(pl, "confirm", global.llm.confirm),
     },
-    treeSitter: {
-      binPath: asStringOr(pt, "binPath", global.treeSitter.binPath),
-      grammarDir: pt
-        ? typeof pt.grammarDir === "string"
-          ? pt.grammarDir
-          : pt.grammarDir === null
-            ? null
-            : global.treeSitter.grammarDir
-        : global.treeSitter.grammarDir,
-    },
-    prompting: {
-      requireConfirmation: asBooleanOr(pp, "requireConfirmation", global.prompting.requireConfirmation),
-      askReasonOnDeny: asBooleanOr(pp, "askReasonOnDeny", global.prompting.askReasonOnDeny),
-      sessionGrants: asBooleanOr(pp, "sessionGrants", global.prompting.sessionGrants),
-      onPromptCommand: asStringOr(pp, "onPromptCommand", global.prompting.onPromptCommand),
+    hooks: {
+      afterPrompt: asStringOr(ph, "afterPrompt", global.hooks.afterPrompt),
     },
     audit: {
       enabled: asBooleanOr(pa, "enabled", global.audit.enabled),
-      file: asStringOr(pa, "file", global.audit.file),
     },
   };
 }
@@ -268,7 +247,7 @@ export function normalizeConfig(raw: unknown): ImmunityConfig {
 }
 
 /* ------------------------------------------------------------------ */
-/* Loading                                                              */
+/* Loading                                                             */
 /* ------------------------------------------------------------------ */
 
 export interface ConfigScope {
@@ -280,8 +259,17 @@ export interface ConfigScope {
   skipped?: boolean;
 }
 
+/** Scoped rule views for deterministic evaluation (project overrules global). */
+export interface ScopedRules {
+  paths: { project: PathRule[]; global: PathRule[] };
+  commands: { project: CommandRule[]; global: CommandRule[] };
+}
+
 export interface LoadResult {
+  /** merged config: rules ordered project-first then global (LLM feed) */
   config: ImmunityConfig;
+  /** scoped rule views (deterministic evaluation) */
+  rules: ScopedRules;
   scopes: ConfigScope[];
 }
 
@@ -328,6 +316,20 @@ export function loadConfig(opts: LoadOptions): LoadResult {
   }
 
   const globalConfig = global.raw !== undefined ? normalizeConfig(global.raw) : DEFAULT_CONFIG;
-  const projectRaw = project?.raw !== undefined ? asRecord(project.raw) : null;
-  return { config: mergeConfig(globalConfig, projectRaw), scopes };
+  const projectConfig = project?.raw !== undefined ? normalizeConfig(project.raw) : null;
+
+  return {
+    config: mergeConfig(globalConfig, project?.raw !== undefined ? asRecord(project.raw) : null),
+    rules: {
+      paths: {
+        project: projectConfig?.paths.rules ?? [],
+        global: globalConfig.paths.rules,
+      },
+      commands: {
+        project: projectConfig?.commands.rules ?? [],
+        global: globalConfig.commands.rules,
+      },
+    },
+    scopes,
+  };
 }

@@ -5,7 +5,7 @@
  */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { BUS, emitBlocked, emitGrantCreated, emitPromptClosed, emitPromptOpened, newPromptId, type Bus } from "./bus.ts";
+import { BUS, emitBlocked, emitDecided, emitPromptClosed, emitPromptOpened, newPromptId, type Bus } from "./bus.ts";
 import { promptEnv, runPromptCommand, PROMPT_ENV_KEYS } from "./notify.ts";
 
 function fakeBus(): { bus: Bus; events: { channel: string; data: unknown }[] } {
@@ -62,11 +62,11 @@ describe("bus events", () => {
     assert.equal(closed.prompt.id, id);
   });
 
-  it("grant created carries scope and persistence", () => {
+  it("decided carries kind, scope and persistence", () => {
     const { bus, events } = fakeBus();
-    emitGrantCreated(bus, { feature: "bash", action: "ls", grant: { scope: "always", persisted: true } });
-    assert.equal(events[0].channel, BUS.grantCreated);
-    assert.deepEqual(events[0].data, { feature: "bash", action: "ls", grant: { scope: "always", persisted: true } });
+    emitDecided(bus, { feature: "bash", action: "ls", decision: { kind: "allow", scope: "global", persisted: true } });
+    assert.equal(events[0].channel, BUS.decided);
+    assert.deepEqual(events[0].data, { feature: "bash", action: "ls", decision: { kind: "allow", scope: "global", persisted: true } });
   });
 });
 

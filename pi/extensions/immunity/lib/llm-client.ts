@@ -45,8 +45,8 @@ export interface VerdictOptions {
   model?: string;
   /** analyzer persona — placeholder until §8 of the design doc */
   systemPrompt?: string;
-  /** carried via `--append-system-prompt` (llm.appendSystemPrompt) */
-  appendSystemPrompt?: string;
+  /** user-authored policy text, appended to the system prompt via pi's flag */
+  userPrompt?: string;
   /** path to subprocess/analysis-tool.ts (default: resolved next to this module) */
   analysisToolPath?: string;
   timeoutMs?: number;
@@ -95,7 +95,7 @@ export const DEFAULT_SYSTEM_PROMPT =
   "  • reading secret files: ~/.ssh/**, id_rsa/id_ed25519, .env files, credentials, keychains\n" +
   "  • python for anything beyond a trivial one-liner: prefer node\n" +
   "- Explicit user allowances take precedence over the general policy: paths and commands listed as allowed in the Policy line are deliberate user decisions and must NEVER be DENYed on general grounds (at most ASK_USER).\n" +
-  "- When you deny or flag a command, populate the suggestion fields so the user can act: paths.blocked = concrete paths the command touches (protect or allow them) — always normalized concrete paths, never globs or wildcards (*, **, ?); commands.blocked = the exact command (raw) plus optionally a broader pattern (general) the same rule could cover. general is only informational — never apply it yourself.\n" +
+  "- When you deny or flag a command, populate the suggestion fields so the user can act: paths.blocked = concrete paths the command touches (protect or allow them) — always normalized concrete paths, never globs or wildcards (*, **, ?); commands.blocked = the exact command as run (raw) plus optionally a broader command form (general) the same rule could cover — general must itself be a command (e.g. `find ~/repos -maxdepth 1 -type d | wc -l` for a variant with different flags), never a prose description; omit general when you cannot produce a command form. general is only informational — never apply it yourself.\n" +
   "- ASK_USER (delegate the decision, risk low|high), with context in the reason:\n" +
   "  • chmod/chmod +x creating an executable (ad-hoc scripts): the agent should prefer `bash -c '...'` so the script body stays visible to the LLM\n" +
   "  • installing packages: npm install/add, pnpm add, pip install, brew install, apt-get install and similar";
@@ -122,7 +122,7 @@ export function buildArgs(command: string, opts: VerdictOptions = {}): string[] 
   ];
   if (opts.provider) args.push("--provider", opts.provider);
   if (opts.model) args.push("--model", opts.model);
-  if (opts.appendSystemPrompt) args.push("--append-system-prompt", opts.appendSystemPrompt);
+  if (opts.userPrompt) args.push("--append-system-prompt", opts.userPrompt);
   let message = opts.cwd ? `Command: ${command}\nProject cwd: ${opts.cwd}` : command;
   if (opts.policy) message += `\nPolicy: ${opts.policy}`;
   args.push("--system-prompt", opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT, message);

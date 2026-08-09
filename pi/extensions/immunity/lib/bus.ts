@@ -3,11 +3,11 @@
  * (`emit(channel, data)`, `on(channel, handler)`). Pure module: the bus
  * instance is injected by index.ts (pi.events).
  *
- * Channels (design §5):
+ * Channels:
  *   immunity:action:blocked   { feature, action, reason, block: { source, userReason? }, context }
  *   immunity:prompt:opened    { prompt: { id, feature, reason } }  — correlated by prompt.id
  *   immunity:prompt:closed    { prompt: { id, feature, reason } }  — emitted in `finally`
- *   immunity:grant:created    { feature, action, grant: { scope, persisted? } }
+ *   immunity:action:decided   { feature, action, decision: { kind, scope, persisted? } }
  */
 import { randomUUID } from "node:crypto";
 import type { BlockSource } from "./audit.ts";
@@ -16,7 +16,7 @@ export const BUS = {
   blocked: "immunity:action:blocked",
   promptOpened: "immunity:prompt:opened",
   promptClosed: "immunity:prompt:closed",
-  grantCreated: "immunity:grant:created",
+  decided: "immunity:action:decided",
 } as const;
 
 export type Bus = { emit(channel: string, data: unknown): void };
@@ -33,10 +33,15 @@ export interface PromptEvent {
   prompt: { id: string; feature: "bash" | "file"; reason: string };
 }
 
-export interface GrantEvent {
+export interface DecidedEvent {
   feature: "bash" | "file";
   action: string;
-  grant: { scope: "session" | "always"; persisted?: boolean };
+  decision: {
+    kind: "allow" | "block";
+    /** menu scope the choice came from; session statements never persist */
+    scope: "session" | "project" | "global";
+    persisted?: boolean;
+  };
 }
 
 export function newPromptId(): string {
@@ -55,6 +60,6 @@ export function emitPromptClosed(bus: Bus, e: PromptEvent): void {
   bus.emit(BUS.promptClosed, e);
 }
 
-export function emitGrantCreated(bus: Bus, e: GrantEvent): void {
-  bus.emit(BUS.grantCreated, e);
+export function emitDecided(bus: Bus, e: DecidedEvent): void {
+  bus.emit(BUS.decided, e);
 }

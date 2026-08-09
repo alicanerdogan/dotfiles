@@ -1,5 +1,5 @@
 /**
- * onPromptCommand (design §5): a user-configured bash command runs right
+ * hooks.afterPrompt (design §5): a user-configured bash command runs right
  * before an approval prompt opens. Pure module — spawn is injectable for
  * tests; the real call passes node:child_process.spawn.
  *
@@ -56,11 +56,11 @@ export function runPromptCommand(
       stdio: "ignore",
     });
   } catch (err) {
-    opts.log?.(`immunity: onPromptCommand spawn failed: ${err instanceof Error ? err.message : String(err)}`);
+    opts.log?.(`immunity: afterPrompt spawn failed: ${err instanceof Error ? err.message : String(err)}`);
     return;
   }
   child!.on("error", (err) => {
-    opts.log?.(`immunity: onPromptCommand failed: ${err.message}`);
+    opts.log?.(`immunity: afterPrompt failed: ${err.message}`);
   });
   const timer = setTimeout(() => {
     try {

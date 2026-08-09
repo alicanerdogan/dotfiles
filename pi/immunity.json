@@ -1,35 +1,39 @@
 {
-  "version": 1,
-  "enabled": true,
-  "pathnames": {
-    "protected": [
-      { "pattern": "**/.env*", "mode": "modify", "onlyIfExists": true },
-      { "pattern": "~/.ssh/**", "mode": "read" }
-    ],
-    "allowed": []
+  "strict": true,
+  "paths": {
+    "rules": [
+      {
+        "action": "ask",
+        "kind": "file",
+        "path": "./.env"
+      },
+      {
+        "action": "deny",
+        "kind": "directory",
+        "path": "~/.ssh"
+      },
+      {
+        "action": "allow",
+        "kind": "directory",
+        "path": "./node_modules"
+      }
+    ]
   },
   "commands": {
-    "patterns": [],
-    "autoDenyPatterns": [],
-    "allowed": [],
-    "useBuiltinMatchers": true
+    "rules": [],
+    "promptWhen": "blocked"
   },
   "llm": {
-    "enabled": true,
     "provider": "opencode-go",
     "model": "deepseek-v4-flash",
-    "appendSystemPrompt": "",
-    "piPath": "",
     "timeoutMs": 30000,
-    "autoDeny": true,
-    "confirm": true
+    "userPrompt": "",
+    "piPath": ""
   },
-  "treeSitter": { "binPath": "tree-sitter", "grammarDir": null },
-  "prompting": {
-    "requireConfirmation": true,
-    "askReasonOnDeny": true,
-    "sessionGrants": true,
-    "onPromptCommand": ""
+  "hooks": {
+    "afterPrompt": ""
   },
-  "audit": { "enabled": true, "file": "" }
+  "audit": {
+    "enabled": true
+  }
 }

@@ -1,69 +1,54 @@
 /**
- * Analysis pipeline (design §2): grant → LLM verdict → deterministic floor
- * → decision. Pure module — no pi imports, so it runs under plain
- * `node --test`; index.ts supplies pi-derived inputs (ctx.cwd, ctx.signal,
- * config paths, notify/UI wiring).
+ * Analysis pipeline (design updates doc): session statements → LLM (bash)
+ * or deterministic rules (files) → fallback/strict.
  *
- * Stage order and short-circuiting:
- *   1. grant   — session grant (allow-once/session/always) → allow
- *   2. llm     — supervision: runs for every bash command when llm.enabled
- *                and its verdict is recorded (audit trail) even when the
- *                deterministic floor later blocks or prompts
- *   3. rules   — deterministic floor: deny → block (always wins); prompt →
- *                prompt (or notify when requireConfirmation is off); allow →
- *                the LLM verdict decides — or plain allow when the LLM is
- *                disabled or the request is a file access (files stay
- *                deterministic-only in v1)
+ * Session statements are checked first and are final: an allow short-
+ * circuits everything (no LLM call), a deny blocks silently.
  *
- * The floor is non-negotiable: an LLM ALLOWED can never override a rule deny,
- * and an inconclusive analysis (any kind) prompts — never approval.
+ * Files are deterministic-only: project rules → global rules → hard
+ * defaults (outside cwd / gitignored = blocked). Every non-allow outcome
+ * surfaces as a prompt with the six-option menu — ask and deny rules both
+ * prompt (blocked requests are prompted); they differ in reason text and
+ * in the LLM policy feed.
+ *
+ * Commands are LLM-judged when the LLM layer is enabled: the rules are fed
+ * to the analyzer as context (project first, then global; the LLM resolves
+ * conflicts). `commands.promptWhen` maps verdicts to behavior:
+ *   asked     — only ask-rule requests prompt; DENY verdicts block silently
+ *   blocked   — asks and blocks prompt (default)
+ *   everytime — prompt after every verdict (debugging)
+ * When the LLM is disabled or inconclusive, the deterministic fallback
+ * decides: regex if present, else string matching per `exact`. With no
+ * rule match, `strict` decides — prompt (default) or allow.
  */
-import { analyzeCommand, type AnalyzeResult } from "./tree-sitter.ts";
-import { checkCommand, type CommandMatch } from "./commands.ts";
-import { evaluatePath, expandPath, type AccessKind, type PathEval } from "./paths.ts";
+import { matchRules } from "./commands.ts";
+import { evaluatePath, expandPath, scopeDecision, type PathEval } from "./paths.ts";
 import { requestVerdict, type Verdict, type VerdictOptions, type VerdictResult } from "./llm-client.ts";
-import { DEFAULT_CONFIG, type LlmConfig, type CommandRules, type PathnameRules, type PromptingConfig, type TreeSitterConfig } from "./config.ts";
-import { MemoryGrantStore, type GrantScope, type GrantStore } from "./grants.ts";
-// re-exported so pipeline users (tests, prompt flow) import grants from one place
-export { MemoryGrantStore, type GrantScope, type GrantStore } from "./grants.ts";
+import type { CommandRule, LlmConfig, PathRule, PromptWhen } from "./config.ts";
+import { SessionState } from "./session.ts";
 
 /* ------------------------------------------------------------------ */
-/* Request + grant model                                               */
+/* Request model                                                       */
 /* ------------------------------------------------------------------ */
 
 export type ToolRequest =
   | { kind: "bash"; command: string; cwd: string; home: string }
-  | { kind: "file"; tool: string; target: string; access: AccessKind; cwd: string; home: string };
+  | { kind: "file"; tool: string; target: string; cwd: string; home: string };
 
-/** Stable identity for grant bookkeeping (same shape for session + persisted). */
+/** Stable session-statement key (same shape for bash and file requests). */
 export function grantKey(req: ToolRequest): string {
   if (req.kind === "bash") return `bash:${req.command}`;
-  const target = evaluateTarget(req);
-  return `file:${req.access}:${req.tool}:${target}`;
-}
-
-function evaluateTarget(req: ToolRequest): string {
-  if (req.kind !== "file") return "";
-  return expandPath(req.target, { cwd: req.cwd, home: req.home });
+  return `file:${expandPath(req.target, { cwd: req.cwd, home: req.home })}`;
 }
 
 /* ------------------------------------------------------------------ */
-/* Stage traces                                                        */
+/* Stage traces + outcomes                                             */
 /* ------------------------------------------------------------------ */
 
-export interface GrantStage {
-  stage: "grant";
-  grant: GrantScope | null;
-}
-
-export interface RulesStage {
-  stage: "rules";
-  verdict: "allow" | "prompt" | "deny";
-  /** bash only: which model path produced the command model */
-  modelSource?: "ast" | "words";
-  degraded?: string | null;
-  matches: CommandMatch[];
-  path?: PathEval;
+export interface SessionStage {
+  stage: "session";
+  denied: boolean;
+  allowed: boolean;
 }
 
 export interface LlmStage {
@@ -72,16 +57,19 @@ export interface LlmStage {
   verdict?: Verdict;
 }
 
-export type Stage = GrantStage | RulesStage | LlmStage;
+export interface RulesStage {
+  stage: "rules";
+  /** deterministic fallback decision (commands) or file evaluation */
+  decision: { action: "allow" | "ask" | "deny"; scope: "project" | "global" | "default"; rule?: CommandRule | PathRule } | null;
+  path?: PathEval;
+}
 
-/* ------------------------------------------------------------------ */
-/* Outcome                                                             */
-/* ------------------------------------------------------------------ */
+export type Stage = SessionStage | LlmStage | RulesStage;
 
-export type BlockSource = "policy" | "autoDeny" | "llm";
-export type PromptSource = "policy" | "llm";
+export type BlockSource = "session" | "policy" | "llm";
+export type PromptSource = "policy" | "llm" | "default";
 
-/** Actionable suggestions the LLM returned with a rejection (menu options). */
+/** Actionable suggestions the LLM returned with a rejection (path step). */
 export interface Suggestions {
   paths: string[];
   commands: { raw: string; general?: string }[];
@@ -89,7 +77,6 @@ export interface Suggestions {
 
 export type Outcome =
   | { outcome: "allow"; reason: string }
-  | { outcome: "notify"; reason: string }
   | { outcome: "prompt"; reason: string; source: PromptSource; suggestions?: Suggestions }
   | { outcome: "block"; reason: string; source: BlockSource };
 
@@ -103,18 +90,57 @@ export interface PipelineResult {
 /* ------------------------------------------------------------------ */
 
 export interface PipelineOptions {
-  rules: CommandRules;
-  pathRules: PathnameRules;
+  strict: boolean;
+  paths: { project: PathRule[]; global: PathRule[] };
+  commands: { project: CommandRule[]; global: CommandRule[] };
+  promptWhen: PromptWhen;
   llm: LlmConfig;
-  ts: TreeSitterConfig;
-  prompting: Pick<PromptingConfig, "requireConfirmation">;
-  grants?: GrantStore | null;
-  /** degradation warnings (tree-sitter missing) — index.ts wires ctx.ui.notify */
-  notify?: (msg: string) => void;
+  session?: SessionState | null;
+  /** gitignore check for file requests; default: real `git check-ignore` */
+  gitIgnoreCheck?: (path: string, cwd: string) => Promise<boolean>;
   /** injectable LLM client for tests; defaults to the real subprocess client */
   llmClient?: (command: string, opts: VerdictOptions) => Promise<VerdictResult>;
   /** passed through to requestVerdict (ctx.signal) */
   signal?: AbortSignal;
+}
+
+/** Compact policy feed for the analyzer: scoped rules, project (higher priority) first. */
+export function formatPolicy(paths: { project: PathRule[]; global: PathRule[] }, commands: { project: CommandRule[]; global: CommandRule[] }): string {
+  const parts: string[] = [];
+  const scopePart = (label: string, pathRules: PathRule[], commandRules: CommandRule[]) => {
+    const bits: string[] = [];
+    if (pathRules.length) {
+      bits.push(`paths [${pathRules.map((r) => `${r.action} ${r.kind} ${r.path}`).join(", ")}]`);
+    }
+    if (commandRules.length) {
+      bits.push(`commands [${commandRules.map((r) => `${r.action}${r.exact ? " (exact)" : ""} ${r.raw}`).join(", ")}]`);
+    }
+    if (bits.length) parts.push(`${label}: ${bits.join("; ")}`);
+  };
+  scopePart("project rules (higher priority)", paths.project, commands.project);
+  scopePart("global rules", paths.global, commands.global);
+  return parts.join(" | ");
+}
+
+function commandReason(rule: CommandRule): string {
+  return `command rule: ${rule.action} ${rule.raw}`;
+}
+
+/** Deterministic fallback: project matches → global matches → strict/default. */
+function fallbackDecision(
+  project: CommandRule[],
+  global: CommandRule[],
+  command: string,
+): { decision: { action: "allow" | "ask" | "deny"; scope: "project" | "global"; rule: CommandRule } | null } {
+  const projectMatch = scopeDecision(project.filter((r) => matchRules([r], command).length));
+  if (projectMatch) {
+    return { decision: { action: projectMatch.decision, scope: "project", rule: projectMatch.rule as CommandRule } };
+  }
+  const globalMatch = scopeDecision(global.filter((r) => matchRules([r], command).length));
+  if (globalMatch) {
+    return { decision: { action: globalMatch.decision, scope: "global", rule: globalMatch.rule as CommandRule } };
+  }
+  return { decision: null };
 }
 
 function suggestionsOf(verdict: Verdict): Suggestions | undefined {
@@ -124,174 +150,120 @@ function suggestionsOf(verdict: Verdict): Suggestions | undefined {
   return { paths, commands };
 }
 
-function joinLabels(matches: CommandMatch[]): string {
-  return matches.map((m) => m.label).join("; ");
-}
-
-/** Compact policy for the analysis message: what is protected, what is explicitly allowed. */
-export function formatPolicy(rules: CommandRules, pathRules: PathnameRules): string {
-  const parts: string[] = [];
-  if (pathRules.protected.length) {
-    parts.push(`paths protected [${pathRules.protected.map((r) => `${r.pattern} (${r.mode})`).join(", ")}]`);
-  }
-  if (pathRules.allowed.length) {
-    parts.push(`paths allowed [${pathRules.allowed.map((a) => `${a.path} (${a.kind})`).join(", ")}]`);
-  }
-  if (rules.allowed.length) {
-    parts.push(`commands allowed [${rules.allowed.join(", ")}]`);
-  }
-  return parts.join("; ");
-}
-
-/** Zero-config pipeline (all-default rules) — used when no options are given. */
-const DEFAULT_PIPELINE_OPTIONS: PipelineOptions = {
-  rules: DEFAULT_CONFIG.commands,
-  pathRules: DEFAULT_CONFIG.pathnames,
-  llm: DEFAULT_CONFIG.llm,
-  ts: DEFAULT_CONFIG.treeSitter,
-  prompting: DEFAULT_CONFIG.prompting,
-};
-
-export async function runPipeline(req: ToolRequest, opts: PipelineOptions = DEFAULT_PIPELINE_OPTIONS): Promise<PipelineResult> {
+export async function runPipeline(req: ToolRequest, opts: PipelineOptions): Promise<PipelineResult> {
   const stages: Stage[] = [];
 
-  /* 1. Grant check — fastest path, short-circuits everything. */
+  /* 1. Session statements — final for the session, no LLM. */
   const key = grantKey(req);
-  const grant = opts.grants?.check(key) ?? null;
-  stages.push({ stage: "grant", grant });
-  if (grant) {
-    return { outcome: { outcome: "allow", reason: `granted (${grant})` }, stages };
+  const denied = opts.session?.isDenied(key) ?? false;
+  const allowed = opts.session?.isAllowed(key) ?? false;
+  stages.push({ stage: "session", denied, allowed });
+  if (denied) {
+    return { outcome: { outcome: "block", reason: "blocked for session", source: "session" }, stages };
+  }
+  if (allowed) {
+    return { outcome: { outcome: "allow", reason: "allowed for session" }, stages };
   }
 
-  /* 2. LLM verdict — supervision: every bash command when enabled. The verdict
-   * is recorded even when the deterministic floor later blocks or prompts. */
+  /* 2. Files — deterministic only. */
+  if (req.kind === "file") {
+    const path = await evaluatePath(req.target, {
+      cwd: req.cwd,
+      home: req.home,
+      project: opts.paths.project,
+      global: opts.paths.global,
+      gitIgnoreCheck: opts.gitIgnoreCheck,
+    });
+    const decision =
+      path.scope === "default"
+        ? null
+        : { action: path.decision as "allow" | "ask" | "deny", scope: path.scope as "project" | "global", rule: path.rule };
+    stages.push({ stage: "rules", decision, path });
+
+    if (path.decision === "allow") {
+      return { outcome: { outcome: "allow", reason: path.rule ? `allowed by rule: ${path.rule.path}` : "in project cwd" }, stages };
+    }
+    let reason: string;
+    let source: PromptSource;
+    if (path.rule) {
+      reason = `${path.rule.action === "ask" ? "path requires permission" : "path denied by rule"}: ${path.rule.path} (${path.scope})`;
+      source = "policy";
+    } else {
+      reason = `${path.defaultReason}: ${req.target}`;
+      source = "default";
+    }
+    return { outcome: { outcome: "prompt", reason, source }, stages };
+  }
+
+  /* 3. Commands — LLM when enabled, else deterministic fallback. */
   let llmStage: LlmStage | undefined;
-  if (req.kind === "bash" && opts.llm.enabled) {
+  if (!opts.llm.disabled) {
     const client = opts.llmClient ?? requestVerdict;
     const result = await client(req.command, {
       piPath: opts.llm.piPath,
       provider: opts.llm.provider,
       model: opts.llm.model,
-      appendSystemPrompt: opts.llm.appendSystemPrompt,
+      userPrompt: opts.llm.userPrompt,
       timeoutMs: opts.llm.timeoutMs,
       signal: opts.signal,
       cwd: req.cwd,
-      policy: formatPolicy(opts.rules, opts.pathRules),
+      policy: formatPolicy(opts.paths, opts.commands),
     });
     llmStage = { stage: "llm", result, verdict: result.ok ? result.verdict : undefined };
     stages.push(llmStage);
-  }
 
-  /* 3. Deterministic rules — the floor. */
-  let floor: "allow" | "prompt" | "deny" = "allow";
-  let floorReason = "no rule matched";
-  let floorSource: BlockSource | undefined;
-
-  if (req.kind === "file") {
-    const path = evaluatePath(req.target, {
-      kind: req.access,
-      cwd: req.cwd,
-      home: req.home,
-      rules: opts.pathRules,
-    });
-    // precedence: protected rules > explicit allows > outside-cwd boundary > allow;
-    // the boundary is implicit (prompt) — no config knob, users steer it via allowed
-    const verdict = path.protected && !path.allowed ? "prompt" : path.allowed ? "allow" : path.outside ? "prompt" : "allow";
-    stages.push({ stage: "rules", verdict, matches: [], path });
-    if (verdict === "prompt") {
-      floor = "prompt";
-      floorReason = path.rule?.pattern
-        ? `protected path matches ${path.rule.pattern}`
-        : `outside project cwd: ${req.target}`;
+    if (result.ok) {
+      const { verdict } = result;
+      switch (verdict.outcome) {
+        case "ALLOWED":
+          if (opts.promptWhen === "everytime") {
+            return {
+              outcome: {
+                outcome: "prompt",
+                reason: `LLM verdict: ALLOWED (risk ${verdict.risk})${verdict.reason ? ` — ${verdict.reason}` : ""}`,
+                source: "llm",
+              },
+              stages,
+            };
+          }
+          return { outcome: { outcome: "allow", reason: verdict.reason ?? "LLM: allowed" }, stages };
+        case "DENY":
+          if (opts.promptWhen === "asked") {
+            return { outcome: { outcome: "block", reason: verdict.reason ?? "LLM: deny", source: "llm" }, stages };
+          }
+          return {
+            outcome: { outcome: "prompt", reason: verdict.reason ?? "LLM: high risk", source: "llm", suggestions: suggestionsOf(verdict) },
+            stages,
+          };
+        case "ASK_USER":
+          return { outcome: { outcome: "prompt", reason: verdict.reason ?? "LLM: asks user", source: "llm", suggestions: suggestionsOf(verdict) }, stages };
+      }
     }
-  } else {
-    const analysis: AnalyzeResult = analyzeCommand(req.command, opts.ts, opts.notify);
-    const decision = checkCommand(analysis.model, opts.rules);
-    stages.push({
-      stage: "rules",
-      verdict: decision.verdict,
-      modelSource: analysis.source,
-      degraded: analysis.degraded,
-      matches: decision.matches,
-    });
+    // inconclusive — fall through to the deterministic fallback
+  }
 
-    if (decision.verdict === "deny") {
-      const deny = decision.matches.find((m) => m.severity === "deny");
-      floor = "deny";
-      floorReason = joinLabels(decision.matches);
-      floorSource = deny?.source === "autoDeny" ? "autoDeny" : "policy";
-    } else if (decision.verdict === "prompt") {
-      floor = "prompt";
-      floorReason = joinLabels(decision.matches);
+  /* 4. Deterministic fallback (LLM disabled, unavailable, or inconclusive). */
+  const { decision } = fallbackDecision(opts.commands.project, opts.commands.global, req.command);
+  stages.push({ stage: "rules", decision });
+  if (decision) {
+    const reason = commandReason(decision.rule);
+    if (decision.action === "allow") {
+      return { outcome: { outcome: "allow", reason }, stages };
     }
-  }
-
-  /* 4. Decision — the floor wins; the LLM decides only what the floor allowed. */
-  if (floor === "deny") {
-    return { outcome: { outcome: "block", reason: floorReason, source: floorSource ?? "policy" }, stages };
-  }
-  if (floor === "prompt") {
-    if (opts.prompting.requireConfirmation) {
-      return { outcome: { outcome: "prompt", reason: floorReason, source: "policy" }, stages };
+    if (decision.action === "deny") {
+      if (opts.promptWhen === "asked") {
+        return { outcome: { outcome: "block", reason, source: "policy" }, stages };
+      }
+      return { outcome: { outcome: "prompt", reason, source: "policy" }, stages };
     }
-    return { outcome: { outcome: "notify", reason: floorReason }, stages };
+    return { outcome: { outcome: "prompt", reason, source: "policy" }, stages };
   }
 
-  // floor allow — file requests and disabled-LLM sessions end here
-  if (!llmStage) {
-    return { outcome: { outcome: "allow", reason: "no rule matched" }, stages };
-  }
-
-  const { result } = llmStage;
-  if (!result.ok) {
+  if (opts.strict) {
     return {
-      outcome: {
-        outcome: "prompt",
-        reason: `LLM analysis inconclusive (${result.kind}): ${result.error}`,
-        source: "llm",
-      },
+      outcome: { outcome: "prompt", reason: "no rule matched; no LLM analysis available", source: "default" },
       stages,
     };
   }
-
-  const { verdict } = result;
-  switch (verdict.outcome) {
-    case "ALLOWED":
-      if (opts.llm.confirm) {
-        // debug mode: surface the verdict and let the user decide instead of auto-allowing
-        return {
-          outcome: {
-            outcome: "prompt",
-            reason: `LLM verdict: ALLOWED (risk ${verdict.risk})${verdict.reason ? ` — ${verdict.reason}` : " — run anyway?"}`,
-            source: "llm",
-            suggestions: suggestionsOf(verdict),
-          },
-          stages,
-        };
-      }
-      return { outcome: { outcome: "allow", reason: verdict.reason ?? "LLM: allowed" }, stages };
-    case "DENY":
-      if (opts.llm.autoDeny) {
-        return { outcome: { outcome: "block", reason: verdict.reason ?? "LLM: deny", source: "llm" }, stages };
-      }
-      return {
-        outcome: {
-          outcome: "prompt",
-          reason: verdict.reason ?? "LLM: high risk",
-          source: "llm",
-          suggestions: suggestionsOf(verdict),
-        },
-        stages,
-      };
-    case "ASK_USER":
-      return {
-        outcome: {
-          outcome: "prompt",
-          reason: verdict.reason ?? "LLM: asks user",
-          source: "llm",
-          suggestions: suggestionsOf(verdict),
-        },
-        stages,
-      };
-  }
+  return { outcome: { outcome: "allow", reason: "no rule matched" }, stages };
 }

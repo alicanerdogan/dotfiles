@@ -1,433 +1,246 @@
-/**
- * Pipeline tests: staged flow, short-circuiting, grant lookup, decision
- * mapping (deny > prompt > allow), LLM verdict routing, inconclusive
- * handling, degradation notify, mode-strict path gating.
- */
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { runPipeline, grantKey, MemoryGrantStore, type PipelineOptions, type ToolRequest } from "./pipeline.ts";
-import { DEFAULT_CONFIG, type ImmunityConfig } from "./config.ts";
+import { formatPolicy, runPipeline, type PipelineOptions, type ToolRequest } from "./pipeline.ts";
+import { SessionState } from "./session.ts";
+import type { CommandRule, LlmConfig, PathRule } from "./config.ts";
 import type { VerdictResult } from "./llm-client.ts";
 
-const CWD = "/repo";
 const HOME = "/home/u";
+const CWD = "/repo";
 
-function opts(partial: Partial<PipelineOptions> = {}): PipelineOptions {
+const bash = (command: string): ToolRequest => ({ kind: "bash", command, cwd: CWD, home: HOME });
+const file = (target: string, tool = "read"): ToolRequest => ({ kind: "file", tool, target, cwd: CWD, home: HOME });
+
+const PR = (action: PathRule["action"], path: string, kind: PathRule["kind"] = "file"): PathRule => ({ action, kind, path });
+const CR = (action: CommandRule["action"], raw: string, opts: Partial<CommandRule> = {}): CommandRule => ({ action, exact: false, raw, ...opts });
+
+const LLM_OFF: LlmConfig = { disabled: true, provider: "", model: "", userPrompt: "", piPath: "", timeoutMs: 30_000 };
+
+function opts(over: Partial<PipelineOptions> = {}): PipelineOptions {
   return {
-    rules: DEFAULT_CONFIG.commands,
-    pathRules: DEFAULT_CONFIG.pathnames,
-    llm: DEFAULT_CONFIG.llm,
-    ts: DEFAULT_CONFIG.treeSitter,
-    prompting: DEFAULT_CONFIG.prompting,
-    ...partial,
+    strict: true,
+    paths: { project: [], global: [] },
+    commands: { project: [], global: [] },
+    promptWhen: "blocked",
+    llm: LLM_OFF,
+    gitIgnoreCheck: async () => false,
+    ...over,
   };
 }
 
-const bash = (command: string, extra: Partial<ToolRequest> = {}): ToolRequest => ({
-  kind: "bash",
-  command,
-  cwd: CWD,
-  home: HOME,
-  ...extra,
-});
-const file = (target: string, access: "read" | "modify" = "modify"): ToolRequest => ({
-  kind: "file",
-  tool: "file",
-  target,
-  access,
-  cwd: CWD,
-  home: HOME,
-});
+function verdict(risk: "none" | "low" | "high", outcome: "ALLOWED" | "DENY" | "ASK_USER"): VerdictResult {
+  return { ok: true, verdict: { risk, outcome } };
+}
 
-describe("grant stage", () => {
-  it("a matching grant short-circuits to allow", async () => {
-    const grants = new MemoryGrantStore();
-    grants.add("bash:ls -la", "session");
-    const r = await runPipeline(bash("ls -la"), opts({ grants }));
-    assert.equal(r.outcome.outcome, "allow");
-    assert.equal(r.outcome.reason, "granted (session)");
-    assert.deepEqual(r.stages.map((s) => s.stage), ["grant"]);
-  });
-
-  it("no grant falls through to the rules stage", async () => {
-    const r = await runPipeline(bash("ls -la"), opts({ grants: new MemoryGrantStore() }));
-    assert.equal(r.stages[0].stage, "grant");
-    assert.equal((r.stages[0] as { grant: string | null }).grant, null);
-    assert.equal(r.stages.length, 2);
-  });
-
-  it("bash grants are keyed on the raw command; file grants on resolved target + access", () => {
-    assert.equal(grantKey(bash("rm -rf /x")), "bash:rm -rf /x");
-    assert.equal(grantKey(file("~/keys/a.pem", "read")), "file:read:file:/home/u/keys/a.pem");
-    assert.equal(grantKey(file("keys/a.pem", "modify")), "file:modify:file:/repo/keys/a.pem");
-  });
-});
-
-describe("deterministic bash stage", () => {
-  it("benign command with no rules allows", async () => {
-    const r = await runPipeline(bash("ls -la"));
-    assert.deepEqual(r.outcome, { outcome: "allow", reason: "no rule matched" });
-    assert.equal(r.stages[1].stage, "rules");
-  });
-
-  it("autoDeny pattern blocks with source autoDeny", async () => {
-    const r = await runPipeline(
-      bash("git push --force"),
-      opts({ rules: { ...DEFAULT_CONFIG.commands, autoDenyPatterns: ["git push --force"] } }),
-    );
-    assert.equal(r.outcome.outcome, "block");
-    assert.equal(r.outcome.source, "autoDeny");
-    assert.ok(r.outcome.reason.includes("git push --force"));
-  });
-
-  it("builtin deny blocks with source policy", async () => {
-    const r = await runPipeline(bash("mkfs.ext4 /dev/sdb1"));
-    assert.equal(r.outcome.outcome, "block");
-    assert.equal(r.outcome.source, "policy");
-    assert.ok(r.outcome.reason.includes("disk formatting"));
-  });
-
-  it("builtin prompt prompts with source policy", async () => {
-    const r = await runPipeline(bash("rm -rf ~/tmp"));
-    assert.equal(r.outcome.outcome, "prompt");
-    assert.equal(r.outcome.source, "policy");
-    assert.ok(r.outcome.reason.includes("rm -rf"));
-  });
-
-  it("prompt becomes notify when requireConfirmation is off", async () => {
-    const r = await runPipeline(
-      bash("rm -rf ~/tmp"),
-      opts({ prompting: { requireConfirmation: false } }),
-    );
-    assert.equal(r.outcome.outcome, "notify");
-  });
-
-  it("deny beats prompt in a mixed command", async () => {
-    const r = await runPipeline(
-      bash("sudo rm -rf /bin"),
-      opts({ rules: { ...DEFAULT_CONFIG.commands, autoDenyPatterns: ["rm -rf"] } }),
-    );
-    assert.equal(r.outcome.outcome, "block");
-    assert.equal(r.outcome.source, "autoDeny");
-  });
-
-  it("records model source and degraded state in the trace", async () => {
+describe("session statements", () => {
+  it("a session allow short-circuits: allow, no LLM call", async () => {
+    const session = new SessionState();
+    session.addAllow("bash:ls -la");
+    let llmCalls = 0;
     const r = await runPipeline(
       bash("ls -la"),
-      opts({ ts: { binPath: "definitely-missing-ts-bin", grammarDir: null } }),
+      opts({ session, llmClient: async () => (llmCalls++, verdict("none", "ALLOWED")) }),
     );
-    const stage = r.stages[1] as { stage: "rules"; modelSource: string; degraded: string | null };
-    assert.equal(stage.modelSource, "words");
-    assert.ok(stage.degraded);
+    assert.deepEqual(r.outcome, { outcome: "allow", reason: "allowed for session" });
+    assert.equal(llmCalls, 0);
+    assert.deepEqual(r.stages[0], { stage: "session", denied: false, allowed: true });
   });
 
-  it("notifies on degradation", async () => {
-    const notices: string[] = [];
-    await runPipeline(bash("ls -la"), opts({ ts: { binPath: "nope", grammarDir: null }, notify: (m) => notices.push(m) }));
-    assert.equal(notices.length, 1);
-    assert.ok(notices[0].includes("tree-sitter"));
+  it("a session deny blocks silently, no LLM call", async () => {
+    const session = new SessionState();
+    session.addDeny("bash:rm -rf /");
+    let llmCalls = 0;
+    const r = await runPipeline(
+      bash("rm -rf /"),
+      opts({ session, llmClient: async () => (llmCalls++, verdict("none", "ALLOWED")) }),
+    );
+    assert.deepEqual(r.outcome, { outcome: "block", reason: "blocked for session", source: "session" });
+    assert.equal(llmCalls, 0);
   });
 });
 
-describe("deterministic file stage", () => {
-  const protectedEnv = () => ({
-    pathRules: {
-      protected: [{ pattern: "**/.env*", mode: "modify" as const }],
-      allowed: [] as { kind: "file"; path: string }[],
-    },
+describe("files — deterministic only", () => {
+  it("inside cwd, not ignored, no rules → allow", async () => {
+    const r = await runPipeline(file("./a.ts"), opts());
+    assert.deepEqual(r.outcome, { outcome: "allow", reason: "in project cwd" });
   });
 
-  it("a protected path prompts with source policy", async () => {
-    const r = await runPipeline(file(".env"), opts(protectedEnv()));
+  it("ask rule → prompt", async () => {
+    const r = await runPipeline(file("./.env"), opts({ paths: { project: [PR("ask", "./.env")], global: [] } }));
     assert.equal(r.outcome.outcome, "prompt");
     assert.equal(r.outcome.source, "policy");
-    assert.ok(r.outcome.reason.includes("**/.env*"));
+    assert.match(r.outcome.reason, /path requires permission: \.\/\.env \(project\)/);
   });
 
-  it("is mode-strict: read rules do not gate modify access", async () => {
-    const r = await runPipeline(
-      file(".env", "read"),
-      opts({ pathRules: { protected: [{ pattern: "**/.env*", mode: "read" }], allowed: [] } }),
-    );
+  it("deny rule → prompt (blocked requests are prompted)", async () => {
+    const r = await runPipeline(file("./x"), opts({ paths: { project: [PR("deny", "./x")], global: [] } }));
     assert.equal(r.outcome.outcome, "prompt");
-    const r2 = await runPipeline(
-      file(".env", "modify"),
-      opts({ pathRules: { protected: [{ pattern: "**/.env*", mode: "read" }], allowed: [] } }),
-    );
-    assert.equal(r2.outcome.outcome, "allow");
+    assert.match(r.outcome.reason, /path denied by rule: \.\/x \(project\)/);
   });
 
-  it("an allow entry bypasses protection", async () => {
-    const r = await runPipeline(
-      file(".env"),
-      opts({
-        pathRules: {
-          protected: [{ pattern: "**/.env*", mode: "modify" }],
-          allowed: [{ kind: "file", path: "/repo/.env" }],
-        },
-      }),
-    );
-    assert.equal(r.outcome.outcome, "allow");
+  it("outside cwd → prompt (default)", async () => {
+    const r = await runPipeline(file("/etc/hosts"), opts());
+    assert.equal(r.outcome.outcome, "prompt");
+    assert.equal(r.outcome.source, "default");
+    assert.match(r.outcome.reason, /outside project cwd/);
   });
 
-  it("onlyIfExists rules do not fire for new files", async () => {
+  it("gitignored → prompt (default)", async () => {
+    const r = await runPipeline(file("./dist/x.js"), opts({ gitIgnoreCheck: async () => true }));
+    assert.equal(r.outcome.outcome, "prompt");
+    assert.match(r.outcome.reason, /gitignored file/);
+  });
+
+  it("project allow overrides global deny", async () => {
     const r = await runPipeline(
-      file("/repo/new.env"),
-      opts({ pathRules: { protected: [{ pattern: "**/.env", mode: "modify", onlyIfExists: true }], allowed: [] } }),
+      file("./x"),
+      opts({ paths: { project: [PR("allow", "./x")], global: [PR("deny", "./x")] } }),
     );
-    assert.equal(r.outcome.outcome, "allow", "creating a new .env is not gated");
+    assert.deepEqual(r.outcome, { outcome: "allow", reason: "allowed by rule: ./x" });
+  });
+
+  it("no LLM stage for files even when enabled", async () => {
+    const r = await runPipeline(
+      file("./a.ts"),
+      opts({ llm: { ...LLM_OFF, disabled: false }, llmClient: async () => verdict("none", "ALLOWED") }),
+    );
+    assert.ok(!r.stages.some((s) => s.stage === "llm"));
   });
 });
 
-describe("llm stage", () => {
-  const llmEnv = (partial: Partial<PipelineOptions["llm"]> = {}) => ({
-    llm: { ...DEFAULT_CONFIG.llm, enabled: true, ...partial },
-  });
-  const fakeClient = (result: VerdictResult) => async (): Promise<VerdictResult> => result;
+describe("commands — LLM verdicts × promptWhen", () => {
+  const llm = (res: VerdictResult) => ({ llm: { ...LLM_OFF, disabled: false }, llmClient: async () => res });
 
-  it("supervises every bash command when enabled (grant → llm → rules)", async () => {
-    let called = 0;
-    const r = await runPipeline(
-      bash("ls -la"),
-      opts({ ...llmEnv(), llmClient: async () => (called++, { ok: true, verdict: { risk: "none", outcome: "ALLOWED" } }) }),
-    );
-    assert.equal(called, 1);
+  it("ALLOWED → allow; everytime → prompt", async () => {
+    const r = await runPipeline(bash("ls -la"), opts(llm(verdict("none", "ALLOWED"))));
     assert.equal(r.outcome.outcome, "allow");
-    assert.equal(r.stages[1].stage, "llm");
-    assert.equal(r.stages[2].stage, "rules");
+    const r2 = await runPipeline(bash("ls -la"), opts({ ...llm(verdict("none", "ALLOWED")), promptWhen: "everytime" }));
+    assert.equal(r2.outcome.outcome, "prompt");
+    assert.equal(r2.outcome.source, "llm");
+    assert.match(r2.outcome.reason, /LLM verdict: ALLOWED/);
   });
 
-  it("an LLM ALLOWED cannot override a rule deny (floor blocks)", async () => {
-    let called = 0;
-    const r = await runPipeline(
-      bash("mkfs.ext4 /dev/sdb1"),
-      opts({
-        ...llmEnv(),
-        llmClient: async () => (called++, { ok: true, verdict: { risk: "none", outcome: "ALLOWED" } }),
-      }),
-    );
-    assert.equal(called, 1); // supervision still ran and was recorded
-    assert.equal(r.outcome.outcome, "block");
-    assert.equal(r.outcome.source, "policy");
-    assert.equal(r.stages[2].stage, "rules");
-    assert.equal(r.stages[2].verdict, "deny");
+  it("DENY + promptWhen=asked → silent block; blocked → prompt", async () => {
+    const r = await runPipeline(bash("rm -rf x"), opts({ ...llm(verdict("high", "DENY")), promptWhen: "asked" }));
+    assert.deepEqual(r.outcome, { outcome: "block", reason: "LLM: deny", source: "llm" });
+    const r2 = await runPipeline(bash("rm -rf x"), opts(llm(verdict("high", "DENY"))));
+    assert.equal(r2.outcome.outcome, "prompt");
+    assert.equal(r2.outcome.source, "llm");
   });
 
-  it("an LLM ALLOWED cannot override a rule prompt (floor prompts)", async () => {
-    const r = await runPipeline(
-      bash("rm -rf ./node_modules"),
-      opts({ ...llmEnv(), llmClient: fakeClient({ ok: true, verdict: { risk: "none", outcome: "ALLOWED" } }) }),
-    );
-    assert.equal(r.outcome.outcome, "prompt");
-    assert.equal(r.outcome.source, "policy");
-  });
-
-  it("autoDeny pattern blocks even when the LLM allowed", async () => {
-    const r = await runPipeline(
-      bash("git reset --hard HEAD"),
-      opts({
-        rules: { ...DEFAULT_CONFIG.commands, autoDenyPatterns: ["git reset --hard HEAD"] },
-        ...llmEnv(),
-        llmClient: fakeClient({ ok: true, verdict: { risk: "none", outcome: "ALLOWED" } }),
-      }),
-    );
-    assert.equal(r.outcome.outcome, "block");
-    assert.equal(r.outcome.source, "autoDeny");
-  });
-
-  it("does not run when disabled", async () => {
-    const r = await runPipeline(bash("ls -la"), opts({ llm: DEFAULT_CONFIG.llm }));
-    assert.equal(r.stages.length, 2);
-    assert.equal(r.outcome.outcome, "allow");
-  });
-
-  it("skips the llm stage for file requests", async () => {
-    const r = await runPipeline(file("notes.txt"), opts(llmEnv()));
-    assert.equal(r.outcome.outcome, "allow");
-    assert.equal(r.stages.length, 2);
-  });
-
-  it("outside-cwd access prompts by default (implicit boundary)", async () => {
-    const r = await runPipeline(file("~/keys/a.pem", "read"), opts({ ...llmEnv() }));
-    assert.equal(r.outcome.outcome, "prompt");
-    assert.equal(r.outcome.source, "policy");
-    assert.match(r.outcome.reason, /outside project cwd: ~\/keys\/a\.pem/);
-  });
-
-  it("an explicit allowed entry bypasses the outside-cwd boundary", async () => {
-    const r = await runPipeline(file("~/keys/a.pem", "read"), opts({
-      pathRules: {
-        ...DEFAULT_CONFIG.pathnames,
-        allowed: [{ kind: "file", path: "~/keys/a.pem" }],
-      },
-      ...llmEnv(),
-    }));
-    assert.equal(r.outcome.outcome, "allow");
-  });
-
-  it("a protected rule outside cwd still prompts (protected beats boundary)", async () => {
-    const r = await runPipeline(file("~/.ssh/id_rsa", "read"), opts({
-      pathRules: {
-        ...DEFAULT_CONFIG.pathnames,
-        protected: [{ pattern: "~/.ssh/**", mode: "read" }],
-      },
-      ...llmEnv(),
-    }));
-    assert.equal(r.outcome.outcome, "prompt");
-    assert.equal(r.outcome.source, "policy");
-    assert.match(r.outcome.reason, /protected path matches/);
-  });
-
-  it("inside-cwd access is unaffected by the boundary", async () => {
-    const r = await runPipeline(file("notes.txt"), opts({ ...llmEnv() }));
-    assert.equal(r.outcome.outcome, "allow");
-  });
-
-  it("ALLOWED → allow with the verdict reason", async () => {
-    const r = await runPipeline(
-      bash("ls -la"),
-      opts({ ...llmEnv(), llmClient: fakeClient({ ok: true, verdict: { risk: "low", outcome: "ALLOWED", reason: "benign" } }) }),
-    );
-    assert.equal(r.outcome.outcome, "allow");
-    assert.equal(r.outcome.reason, "benign");
-  });
-
-  it("ALLOWED + confirm → prompt showing the verdict (user decides)", async () => {
-    const r = await runPipeline(
-      bash("ls -la"),
-      opts({
-        ...llmEnv({ confirm: true }),
-        llmClient: fakeClient({ ok: true, verdict: { risk: "low", outcome: "ALLOWED", reason: "benign" } }),
-      }),
-    );
+  it("ASK_USER → prompt", async () => {
+    const r = await runPipeline(bash("npm install"), opts(llm(verdict("low", "ASK_USER"))));
     assert.equal(r.outcome.outcome, "prompt");
     assert.equal(r.outcome.source, "llm");
-    assert.match(r.outcome.reason, /ALLOWED \(risk low\)/);
-    assert.match(r.outcome.reason, /benign/);
   });
 
-  it("DENY with autoDeny off → prompt (user decides)", async () => {
+  it("DENY verdicts carry the flagged paths into the prompt outcome", async () => {
     const r = await runPipeline(
-      bash("git push --force"),
+      bash("find ~/repos | wc -l"),
       opts({
-        ...llmEnv(),
-        llmClient: fakeClient({ ok: true, verdict: { risk: "high", outcome: "DENY", reason: "force push" } }),
+        llm: { ...LLM_OFF, disabled: false },
+        llmClient: async () => ({
+          ok: true,
+          verdict: { risk: "high", outcome: "DENY", reason: "outside cwd", paths: { blocked: ["/Users/alican/repos"] } },
+        }),
       }),
     );
     assert.equal(r.outcome.outcome, "prompt");
-    assert.equal(r.outcome.source, "llm");
-    assert.equal(r.outcome.reason, "force push");
+    assert.deepEqual(r.outcome.suggestions?.paths, ["/Users/alican/repos"]);
+  });
+
+  it("ALLOWED verdicts carry no suggestions", async () => {
+    const r = await runPipeline(
+      bash("ls -la"),
+      opts({
+        llm: { ...LLM_OFF, disabled: false },
+        llmClient: async () => ({
+          ok: true,
+          verdict: { risk: "none", outcome: "ALLOWED", paths: { blocked: ["/x"] } },
+        }),
+      }),
+    );
+    assert.equal(r.outcome.outcome, "allow");
     assert.equal(r.outcome.suggestions, undefined);
   });
 
-  it("carries suggestions from the verdict into the prompt outcome", async () => {
-    const r = await runPipeline(
-      bash("git push --force"),
-      opts({
-        ...llmEnv(),
-        llmClient: fakeClient({
-          ok: true,
-          verdict: {
-            risk: "high",
-            outcome: "DENY",
-            paths: { blocked: [] },
-            commands: { blocked: [{ raw: "git push --force", general: "git push" }] },
-          },
-        }),
-      }),
-    );
-    assert.equal(r.outcome.outcome, "prompt");
-    assert.deepEqual(r.outcome.suggestions, { paths: [], commands: [{ raw: "git push --force", general: "git push" }] });
-  });
-
-  it("carries suggestions on confirm prompts too", async () => {
-    const r = await runPipeline(
+  it("LLM verdicts carry the policy feed", async () => {
+    let seen: string | undefined;
+    await runPipeline(
       bash("ls -la"),
       opts({
-        ...llmEnv({ confirm: true }),
-        llmClient: fakeClient({
-          ok: true,
-          verdict: { risk: "low", outcome: "ALLOWED", paths: { blocked: ["~/.ssh/id_rsa"] } },
-        }),
-      }),
-    );
-    assert.equal(r.outcome.outcome, "prompt");
-    assert.deepEqual(r.outcome.suggestions, { paths: ["~/.ssh/id_rsa"], commands: [] });
-  });
-
-  it("DENY with autoDeny on → block source llm", async () => {
-    const r = await runPipeline(
-      bash("git push --force"),
-      opts({
-        ...llmEnv({ autoDeny: true }),
-        llmClient: fakeClient({ ok: true, verdict: { risk: "high", outcome: "DENY", reason: "force push" } }),
-      }),
-    );
-    assert.equal(r.outcome.outcome, "block");
-    assert.equal(r.outcome.source, "llm");
-  });
-
-  it("ASK_USER → prompt even with autoDeny on", async () => {
-    const r = await runPipeline(
-      bash("rm old.log"),
-      opts({
-        ...llmEnv({ autoDeny: true }),
-        llmClient: fakeClient({ ok: true, verdict: { risk: "low", outcome: "ASK_USER", reason: "unclear" } }),
-      }),
-    );
-    assert.equal(r.outcome.outcome, "prompt");
-    assert.equal(r.outcome.source, "llm");
-  });
-
-  it("client failure → prompt, never approval", async () => {
-    const r = await runPipeline(
-      bash("ls -la"),
-      opts({
-        ...llmEnv(),
-        llmClient: async () => ({ ok: false as const, kind: "spawn" as const, error: "pi not found" }),
-      }),
-    );
-    assert.equal(r.outcome.outcome, "prompt");
-    assert.equal(r.outcome.source, "llm");
-    assert.ok(r.outcome.reason.includes("inconclusive"));
-  });
-
-  it("passes the policy to the LLM client (paths + commands)", async () => {
-    let policy = "";
-    const r = await runPipeline(
-      bash("cat .env"),
-      opts({
-        rules: {
-          ...DEFAULT_CONFIG.commands,
-          allowed: ["npm install lodash"],
-        },
-        pathRules: {
-          ...DEFAULT_CONFIG.pathnames,
-          protected: [{ pattern: "**/.env*", mode: "modify" }],
-          allowed: [{ kind: "directory", path: "~/keys" }],
-        },
-        ...llmEnv(),
-        llmClient: async (_cmd, o) => {
-          policy = o.policy ?? "";
-          return { ok: true, verdict: { risk: "none", outcome: "ALLOWED" } };
+        paths: { project: [PR("allow", "~/repos", "directory")], global: [] },
+        commands: { project: [CR("ask", "npm install")], global: [] },
+        llm: { ...LLM_OFF, disabled: false },
+        llmClient: async (_c, o) => {
+          seen = o.policy;
+          return verdict("none", "ALLOWED");
         },
       }),
     );
-    assert.match(policy, /paths protected \[\*\*\/\.env\* \(modify\)\]/);
-    assert.match(policy, /paths allowed \[~\/keys \(directory\)\]/);
-    assert.match(policy, /commands allowed \[npm install lodash\]/);
+    assert.ok(seen?.includes("allow directory ~/repos"), "path rules in feed");
+    assert.ok(seen?.includes("ask npm install"), "command rules in feed");
+  });
+});
+
+describe("commands — deterministic fallback", () => {
+  it("LLM disabled + allow rule → allow", async () => {
+    const r = await runPipeline(bash("npm install lodash"), opts({ commands: { project: [CR("allow", "npm install")], global: [] } }));
     assert.equal(r.outcome.outcome, "allow");
   });
 
-  it("records the verdict in the trace", async () => {
+  it("deny rule → block when promptWhen=asked, prompt otherwise", async () => {
     const r = await runPipeline(
-      bash("ls -la"),
-      opts({
-        ...llmEnv(),
-        llmClient: fakeClient({ ok: true, verdict: { risk: "none", outcome: "ALLOWED" } }),
-      }),
+      bash("git push --force"),
+      opts({ commands: { project: [CR("deny", "git push --force", { exact: true })], global: [] }, promptWhen: "asked" }),
     );
-    const stage = r.stages[1] as { stage: "llm"; verdict: { outcome: string } };
-    assert.equal(stage.verdict.outcome, "ALLOWED");
+    assert.deepEqual(r.outcome, { outcome: "block", reason: "command rule: deny git push --force", source: "policy" });
+    const r2 = await runPipeline(
+      bash("git push --force"),
+      opts({ commands: { project: [CR("deny", "git push --force", { exact: true })], global: [] } }),
+    );
+    assert.equal(r2.outcome.outcome, "prompt");
+  });
+
+  it("ask rule → prompt", async () => {
+    const r = await runPipeline(bash("npm install lodash"), opts({ commands: { project: [CR("ask", "npm install")], global: [] } }));
+    assert.equal(r.outcome.outcome, "prompt");
+  });
+
+  it("project rule beats global rule in the fallback", async () => {
+    const r = await runPipeline(
+      bash("npm install lodash"),
+      opts({ commands: { project: [CR("allow", "npm install")], global: [CR("deny", "npm install")] } }),
+    );
+    assert.equal(r.outcome.outcome, "allow");
+  });
+
+  it("inconclusive LLM → fallback; no match → strict (prompt) or non-strict (allow)", async () => {
+    const inconclusive = { ok: false as const, kind: "timeout" as const, error: "no verdict" };
+    const r = await runPipeline(bash("ls -la"), opts({ llm: { ...LLM_OFF, disabled: false }, llmClient: async () => inconclusive }));
+    assert.equal(r.outcome.outcome, "prompt");
+    assert.equal(r.outcome.source, "default");
+    assert.match(r.outcome.reason, /no rule matched/);
+
+    const r2 = await runPipeline(bash("ls -la"), opts({ strict: false, llm: { ...LLM_OFF, disabled: false }, llmClient: async () => inconclusive }));
+    assert.deepEqual(r2.outcome, { outcome: "allow", reason: "no rule matched" });
+  });
+});
+
+describe("formatPolicy", () => {
+  it("lists project rules first with scope labels; regex and empty sections omitted", () => {
+    const p = formatPolicy(
+      { project: [PR("allow", "~/repos", "directory")], global: [PR("deny", "~/.ssh", "directory")] },
+      { project: [CR("ask", "npm install")], global: [CR("deny", "git push --force", { exact: true, regex: "^git push" })] },
+    );
+    assert.equal(
+      p,
+      "project rules (higher priority): paths [allow directory ~/repos]; commands [ask npm install] | global rules: paths [deny directory ~/.ssh]; commands [deny (exact) git push --force]",
+    );
+    assert.ok(!p.includes("regex"), "regex never leaves the config");
+  });
+
+  it("empty policy", () => {
+    assert.equal(formatPolicy({ project: [], global: [] }, { project: [], global: [] }), "");
   });
 });

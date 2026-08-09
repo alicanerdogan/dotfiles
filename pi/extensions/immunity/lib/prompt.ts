@@ -1,29 +1,23 @@
 /**
- * Prompt & block flow (design §6) — pure module, UI shapes mirror pi's
- * `ctx.ui` (`select`/`input` return undefined when dismissed).
+ * Unified six-option menu (design updates doc) — every blocked command and
+ * file path prompts with the same shape:
  *
- * Primary menu: Allow once | Allow for session | Always allow | Deny |
- * Deny with reason.
- *   - Allow once        → proceed with this call, no grant recorded
- *                         (literally one call; the next identical call
- *                         prompts again)
- *   - Allow for session → session grant recorded (prompting.sessionGrants)
- *   - Always allow      → persisted grant via the persistGrant hook
- *                         (commands.allowed / pathnames.allowed in the
- *                         scope index.ts picks); still allows this call if
- *                         persistence fails (persisted: false)
- *   - Deny              → block, source "user"
- *   - Deny with reason  → optional reason → block with `userReason`; when
- *                         prompting.askReasonOnDeny, a follow-up offers to
- *                         persist the intent as a rule
- *   - dismissed (undefined) or UI failure → deny (safety-first: nothing
- *                         gets through a broken or dismissed prompt)
+ *   Allow for session / Allow for project / Allow globally
+ *   Block for session / Block for project / Block globally
  *
- * Rule follow-up menu: No | Block this command pattern (bash) | Protect
- * this path (file) — gated on which value the request carries.
+ * Session choices are in-memory statements (final for the session). Project
+ * and global choices persist rules via the saveRule hook — always exact:
+ * commands as `{ action, exact: true, raw }`, paths as `{ action, kind, path }`.
+ * After a Block* choice the user is asked whether they want to provide a
+ * reason (built-in, not configurable); a user-provided reason overwrites the
+ * model's reason.
+ *
+ * Dismissed prompts (undefined) and UI failures deny — nothing gets through
+ * a broken prompt (safety-first).
  */
-import type { MemoryGrantStore } from "./grants.ts";
-import type { PromptingConfig } from "./config.ts";
+import { dirname } from "node:path";
+import type { SessionState } from "./session.ts";
+import type { RuleKind } from "./rules.ts";
 import type { Suggestions } from "./pipeline.ts";
 
 export interface PromptUi {
@@ -31,135 +25,225 @@ export interface PromptUi {
   input(title: string, placeholder?: string): Promise<string | undefined>;
 }
 
-export type PromptResult =
-  | { action: "allow"; grant: "once" | "session" | "always"; persisted?: boolean }
-  | { action: "deny"; userReason?: string; savedRule?: "autoDeny" | "path" }
-  | {
-      action: "suggestion";
-      /** writeRule kind the choice maps to */
-      kind: "path" | "pathAllow" | "autoDeny";
-      value: string;
-      scope: "project" | "global";
-    };
+export type MenuScope = "session" | "project" | "global";
+
+export interface PromptResult {
+  action: "allow" | "block";
+  scope: MenuScope;
+  /** rule write success for project/global choices (audit); undefined for session */
+  persisted?: boolean;
+  /** present exactly when the user typed one after a Block* choice */
+  userReason?: string;
+  /** path requests only: effective rule kind (follow-up choice, or the inferred kind for directories) */
+  pathKind?: "file" | "directory";
+  /** path requests only: effective rule value (dirname-adjusted when a file target is applied as a directory) */
+  pathValue?: string;
+}
 
 export interface PromptFlowOptions {
   ui: PromptUi;
   /** the pipeline reason shown in the prompt */
   reason: string;
-  grantKey: string;
-  /** session grant store ("Allow for session" lands here) */
-  grants: Pick<MemoryGrantStore, "add">;
-  prompting: Pick<PromptingConfig, "askReasonOnDeny" | "sessionGrants">;
-  /** raw command for the "Block this command pattern" rule (bash requests) */
+  /** session statement key (grantKey) — session choices land here */
+  sessionKey: string;
+  session: Pick<SessionState, "addAllow" | "addDeny">;
+  /** persists an allow/deny rule to a scope file; returns false when the save failed */
+  saveRule: (kind: RuleKind, value: string, scope: "project" | "global", opts?: { pathKind?: "file" | "directory" }) => boolean | Promise<boolean>;
+  /** raw command (bash requests) */
   command?: string;
-  /** resolved target for the "Protect this path" rule (file requests) */
-  protectPath?: string;
-  /** the model's actionable suggestions — rendered as protect/allow/block options */
-  suggestions?: Suggestions;
-  /** persists a deny rule to config; return false when the save failed */
-  saveRule?: (kind: "autoDeny" | "path", value: string, scope?: "project" | "global") => boolean | Promise<boolean>;
-  /** persists an "always allow" grant to config (commands.allowed / pathnames.allowed) */
-  persistGrant?: (kind: "command" | "path", value: string, scope?: "project" | "global") => boolean | Promise<boolean>;
+  /** durable path value for rule writes (file requests; `~`-normalized) */
+  path?: string;
+  /** inferred kind (index.ts stats the target): directory targets skip the follow-up */
+  pathKind?: "file" | "directory";
 }
 
-const ALLOW_ONCE = "Allow once";
-const ALLOW_SESSION = "Allow for session";
-const ALWAYS_ALLOW = "Always allow";
-const DENY = "Deny";
-const DENY_WITH_REASON = "Deny with reason";
+export const MENU_OPTIONS = [
+  "Allow for session",
+  "Allow for project",
+  "Allow globally",
+  "Block for session",
+  "Block for project",
+  "Block globally",
+] as const;
 
-const NO = "No";
-const BLOCK_PATTERN = "Block this command pattern";
-const PROTECT_PATH = "Protect this path";
+/** Collapse a reason/command to a single display line (picker titles must not wrap). */
+export function oneLine(text: string, max = 200): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+}
 
-function suggestionOptions(suggestions: Suggestions): { label: string; result: Extract<PromptResult, { action: "suggestion" }> }[] {
-  const out: { label: string; result: Extract<PromptResult, { action: "suggestion" }> }[] = [];
-  // the model is instructed to return concrete paths; glob-ish entries are
-  // audit-only (they can never become exact allow rules)
-  const concrete = suggestions.paths.filter((p) => !/[*?\[\]]/.test(p));
-  for (const p of concrete) {
-    out.push({ label: `Protect ${p} (project)`, result: { action: "suggestion", kind: "path", value: p, scope: "project" } });
-    out.push({ label: `Protect ${p} (global)`, result: { action: "suggestion", kind: "path", value: p, scope: "global" } });
-    out.push({ label: `Allow ${p} (project)`, result: { action: "suggestion", kind: "pathAllow", value: p, scope: "project" } });
-    out.push({ label: `Allow ${p} (global)`, result: { action: "suggestion", kind: "pathAllow", value: p, scope: "global" } });
+/** Follow-up for path rules: narrow (the file) or recursive (the containing/this directory). */
+const PATH_KIND_OPTIONS = ["Just this file", "The whole directory (recursive)"] as const;
+
+async function pathKindChoice(ui: PromptUi, inferred: "file" | "directory"): Promise<"file" | "directory"> {
+  if (inferred === "directory") return "directory"; // a directory target is already the directory — no follow-up
+  let choice: string | undefined;
+  try {
+    choice = await ui.select("Apply the rule to?", [...PATH_KIND_OPTIONS]);
+  } catch {
+    return "file"; // a broken follow-up must not widen the rule
   }
-  for (const c of suggestions.commands) {
-    out.push({ label: `Block ${c.raw}`, result: { action: "suggestion", kind: "autoDeny", value: c.raw, scope: "project" } });
-  }
-  return out;
+  return choice === "The whole directory (recursive)" ? "directory" : "file";
 }
 
 export async function runPromptFlow(opts: PromptFlowOptions): Promise<PromptResult> {
-  const suggestionEntries = opts.suggestions ? suggestionOptions(opts.suggestions) : [];
-  const options = [
-    ALLOW_ONCE,
-    ...(opts.prompting.sessionGrants ? [ALLOW_SESSION] : []),
-    ...(opts.persistGrant ? [ALWAYS_ALLOW] : []),
-    DENY,
-    DENY_WITH_REASON,
-    ...suggestionEntries.map((e) => e.label),
-  ];
-
   let choice: string | undefined;
   try {
-    choice = await opts.ui.select(`Immunity: ${opts.reason}`, options);
+    choice = await opts.ui.select(`Immunity: ${oneLine(opts.reason)}`, [...MENU_OPTIONS]);
   } catch {
-    return { action: "deny" }; // a broken prompt must not let the call through
+    return { action: "block", scope: "session" }; // broken prompt must not let the call through
+  }
+  if (choice === undefined) {
+    return { action: "block", scope: "session" };
   }
 
-  if (choice === undefined || choice === DENY) {
-    return { action: "deny" };
-  }
-  const suggestion = suggestionEntries.find((e) => e.label === choice);
-  if (suggestion) {
-    return suggestion.result;
-  }
-  if (choice === ALLOW_ONCE) {
-    return { action: "allow", grant: "once" };
-  }
-  if (choice === ALLOW_SESSION) {
-    opts.grants.add(opts.grantKey, "session");
-    return { action: "allow", grant: "session" };
-  }
-  if (choice === ALWAYS_ALLOW && opts.persistGrant) {
-    const kind = opts.command !== undefined ? "command" : "path";
-    const value = kind === "command" ? opts.command : opts.protectPath;
-    const persisted = value !== undefined ? await opts.persistGrant(kind, value) : false;
-    return { action: "allow", grant: "always", persisted };
-  }
-  // choice === DENY_WITH_REASON
-  let userReason: string | undefined;
-  try {
-    userReason = await opts.ui.input("Reason for blocking (optional)");
-  } catch {
-    userReason = undefined;
+  // path requests: resolve the rule kind + effective value (follow-up for
+  // file targets; a directory choice on a file target applies to its parent)
+  let pathKind: "file" | "directory" | undefined;
+  let pathValue: string | undefined;
+  let sessionKey = opts.sessionKey;
+  if (opts.path !== undefined) {
+    const inferred = opts.pathKind ?? "file";
+    pathKind = await pathKindChoice(opts.ui, inferred);
+    pathValue = opts.path;
+    if (pathKind === "directory" && inferred === "file") {
+      pathValue = dirname(pathValue);
+      if (sessionKey.startsWith("file:")) {
+        sessionKey = `file:${dirname(sessionKey.slice("file:".length))}`;
+      }
+    }
   }
 
-  const result: PromptResult = { action: "deny", userReason };
-  if (userReason && opts.prompting.askReasonOnDeny) {
-    const savedRule = await rememberRuleFlow(opts);
-    if (savedRule) result.savedRule = savedRule;
+  const kind: RuleKind | null =
+    choice === "Allow for project" || choice === "Allow globally"
+      ? opts.command !== undefined
+        ? "commandAllow"
+        : "pathAllow"
+      : choice === "Block for project" || choice === "Block globally"
+        ? opts.command !== undefined
+          ? "commandDeny"
+          : "pathDeny"
+        : null;
+
+  if (kind) {
+    const scope: "project" | "global" = choice.endsWith("globally") ? "global" : "project";
+    const value = opts.command ?? pathValue;
+    const persisted = value !== undefined ? await opts.saveRule(kind, value, scope, pathKind ? { pathKind } : undefined) : false;
+    const common = { persisted, pathKind, pathValue };
+    if (choice.startsWith("Block")) {
+      const userReason = await askReason(opts.ui);
+      return { action: "block", scope, userReason, ...common };
+    }
+    return { action: "allow", scope, ...common };
   }
-  return result;
+
+  // session choices — memory only, final for the session
+  if (choice === "Allow for session") {
+    opts.session.addAllow(sessionKey, pathKind ?? "file");
+    return { action: "allow", scope: "session", pathKind, pathValue };
+  }
+  opts.session.addDeny(sessionKey, pathKind ?? "file");
+  const userReason = await askReason(opts.ui);
+  return { action: "block", scope: "session", userReason, pathKind, pathValue };
 }
 
-async function rememberRuleFlow(opts: PromptFlowOptions): Promise<"autoDeny" | "path" | undefined> {
-  const options = [NO];
-  if (opts.command !== undefined) options.push(BLOCK_PATTERN);
-  if (opts.protectPath !== undefined) options.push(PROTECT_PATH);
-  if (options.length === 1 || !opts.saveRule) return undefined;
-
-  let choice: string | undefined;
+async function askReason(ui: PromptUi): Promise<string | undefined> {
+  let answer: string | undefined;
   try {
-    choice = await opts.ui.select("Remember as a rule?", options);
+    answer = await ui.select("Add a reason for blocking?", ["No", "Yes"]);
   } catch {
     return undefined;
   }
-  if (choice === BLOCK_PATTERN && opts.command !== undefined) {
-    return (await opts.saveRule("autoDeny", opts.command)) ? "autoDeny" : undefined;
+  if (answer !== "Yes") return undefined;
+  try {
+    return await ui.input("Reason for blocking");
+  } catch {
+    return undefined;
   }
-  if (choice === PROTECT_PATH && opts.protectPath !== undefined) {
-    return (await opts.saveRule("path", opts.protectPath)) ? "path" : undefined;
+}
+
+/* ------------------------------------------------------------------ */
+/* Suggestion step — the model's flagged paths, resolved BEFORE the     */
+/* command menu. Protecting a path answers the command question: the    */
+/* command that touches it is blocked without asking.                   */
+/* ------------------------------------------------------------------ */
+
+export type SuggestionChoice =
+  | { action: "allow"; scope: "session" | "project" | "global"; value: string; pathKind: "file" | "directory"; persisted?: boolean }
+  | { action: "protect"; scope: "project" | "global"; value: string; pathKind: "file" | "directory"; persisted?: boolean }
+  | { action: "skip" };
+
+export interface SuggestionStepOptions {
+  ui: PromptUi;
+  /** the pipeline reason shown in the dialog */
+  reason: string;
+  suggestions: Suggestions;
+  session: Pick<SessionState, "addAllow">;
+  /** persists an allow/ask rule to a scope file; returns false when the save failed */
+  saveRule: (kind: RuleKind, value: string, scope: "project" | "global", opts?: { pathKind?: "file" | "directory" }) => boolean | Promise<boolean>;
+  /** kind inference (stats the target); default file */
+  pathKindFor?: (path: string) => "file" | "directory";
+}
+
+export interface SuggestionStepResult {
+  /** one choice per flagged path (skip included), in order */
+  choices: SuggestionChoice[];
+  /** a path was protected → the command is blocked, no command menu */
+  protected: boolean;
+  /** the protected path (reason text) */
+  protectedPath?: string;
+  /** the prompt failed → block the command (safety-first) */
+  failed: boolean;
+}
+
+const SUGGESTION_OPTIONS = [
+  "Allow for session",
+  "Allow for project",
+  "Allow globally",
+  "Protect for project",
+  "Protect for global",
+  "Skip",
+] as const;
+
+/** Run the per-path suggestion dialogs. Stops early when a path is protected. */
+export async function runSuggestionStep(opts: SuggestionStepOptions): Promise<SuggestionStepResult> {
+  const choices: SuggestionChoice[] = [];
+  // concrete, deduped, glob-free paths only — the model is instructed to
+  // return concrete paths; anything else stays audit-only
+  const paths = [...new Set(opts.suggestions.paths.filter((p) => p && !/[*?\[\]]/.test(p)))];
+
+  for (let i = 0; i < paths.length; i++) {
+    const path = paths[i];
+    const pathKind = opts.pathKindFor?.(path) ?? "file";
+    let choice: string | undefined;
+    try {
+      choice = await opts.ui.select(`Immunity (${i + 1}/${paths.length}): analyzer flagged ${path}`, [...SUGGESTION_OPTIONS]);
+    } catch {
+      return { choices, protected: true, failed: true }; // a broken prompt must not let the call through
+    }
+    if (choice === undefined) {
+      return { choices, protected: true, failed: true }; // dismissed → block (safety-first)
+    }
+
+    if (choice === "Skip") {
+      choices.push({ action: "skip" });
+      continue;
+    }
+    if (choice === "Allow for session") {
+      opts.session.addAllow(`file:${path}`, pathKind);
+      choices.push({ action: "allow", scope: "session", value: path, pathKind });
+      continue;
+    }
+    const scope: "project" | "global" = choice === "Allow globally" || choice === "Protect for global" ? "global" : "project";
+    if (choice === "Allow for project" || choice === "Allow globally") {
+      const persisted = await opts.saveRule("pathAllow", path, scope, { pathKind });
+      choices.push({ action: "allow", scope, value: path, pathKind, persisted });
+      continue;
+    }
+    // protect — a deny rule; the command that touches this path is blocked, no command menu
+    const persisted = await opts.saveRule("pathDeny", path, scope, { pathKind });
+    choices.push({ action: "protect", scope, value: path, pathKind, persisted });
+    return { choices, protected: true, protectedPath: path, failed: false };
   }
-  return undefined;
+  return { choices, protected: false, failed: false };
 }

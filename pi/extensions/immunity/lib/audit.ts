@@ -1,20 +1,20 @@
 /**
- * Reason pipeline (design §6 "What happens with the reason"): the block
- * message returned to the agent, and the audit log. Pure module — index.ts
- * supplies sessionId, tool names and the resolved audit path.
+ * Reason pipeline (design updates doc): the block message returned to the
+ * agent, and the audit log. Pure module — index.ts supplies sessionId,
+ * tool names and the resolved audit path.
  *
- * The audit log records blocked calls only (a JSONL line per block): the
- * `source` field distinguishes policy / autoDeny / llm / user blocks, and
- * `userReason` is present exactly when the user typed one. Writes are
+ * The audit records blocked calls (source: policy / llm / session / user),
+ * the LLM verdict trail (every analysis round-trip, suggestions included),
+ * rules written from menu choices, and session statements. Writes are
  * synchronous (ordering matters, cost is microseconds) and failure-safe:
- * appendAudit returns false instead of throwing — the tool call must not
- * crash because the log is unwritable.
+ * appendAudit returns false instead of throwing.
  */
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Outcome, Risk } from "./llm-client.ts";
+import type { RuleKind } from "./rules.ts";
 
-export type BlockSource = "policy" | "autoDeny" | "llm" | "user";
+export type BlockSource = "policy" | "llm" | "session" | "user";
 
 /** Blocked-call entry (the audit's core record). */
 export interface BlockAuditEntry {
@@ -24,7 +24,7 @@ export interface BlockAuditEntry {
   sessionId: string;
   /** "bash" or the file tool name */
   tool: string;
-  /** raw command (bash) or "<access> <resolved target>" (file) */
+  /** raw command (bash) or "<resolved target>" (file) */
   action: string;
   reason: string;
   userReason?: string;
@@ -44,27 +44,44 @@ export interface VerdictAuditEntry {
   reason?: string;
   /** "<kind>: <error>" when the analysis failed (timeout/spawn/no-verdict/parse/output) */
   failure?: string;
-  /** the model's actionable suggestions, as returned (general included) */
+  /** the model's suggestions — audit-only, never rendered or applied */
   suggestedPaths?: string[];
   suggestedCommands?: { raw: string; general?: string }[];
   llm: { provider?: string; model?: string };
 }
 
-/** A rule the user created from a model suggestion (protect/allow/block). */
+/** A rule the user wrote from the menu (allow/block × project/global). */
 export interface RuleAuditEntry {
   event: "rule";
   ts: string;
   sessionId: string;
   tool: string;
   action: string;
-  /** writeRule kind the choice mapped to */
-  kind: "path" | "pathAllow" | "autoDeny";
+  kind: RuleKind;
   value: string;
   scope: "project" | "global";
-  source: "suggestion";
+  /** "menu" = six-option menu, "suggestion" = suggestion step choice */
+  source: "menu" | "suggestion";
+  persisted: boolean;
+  /** path rules only: the effective kind (file = exact, directory = recursive) */
+  pathKind?: "file" | "directory";
 }
 
-export type AuditEntry = BlockAuditEntry | VerdictAuditEntry | RuleAuditEntry;
+/** A session statement from the menu (allow/block for session). */
+export interface SessionAuditEntry {
+  event: "session";
+  ts: string;
+  sessionId: string;
+  tool: string;
+  action: string;
+  kind: "sessionAllow" | "sessionDeny";
+  value: string;
+  scope: "session";
+  /** path statements only */
+  pathKind?: "file" | "directory";
+}
+
+export type AuditEntry = BlockAuditEntry | VerdictAuditEntry | RuleAuditEntry | SessionAuditEntry;
 
 export function defaultAuditPath(cwd: string, configDirName = ".pi"): string {
   return join(cwd, configDirName, "immunity.audit.jsonl");
@@ -73,7 +90,9 @@ export function defaultAuditPath(cwd: string, configDirName = ".pi"): string {
 /** The reason handed back to the model with `block: true`. */
 export function blockMessage(source: BlockSource, reason: string, userReason?: string): string {
   if (source === "user") {
-    return userReason ? `Blocked by user: ${userReason}` : "Blocked by user";
+    // a user reason overwrites the pipeline/LLM reason; without one the
+    // original reason is kept so the agent learns why it was blocked
+    return userReason ? `Blocked by user: ${userReason}` : `Blocked by user: ${reason}`;
   }
   return `Blocked by ${source}: ${reason}`;
 }

@@ -1,498 +1,354 @@
-/**
- * Handler integration tests: the full tool-call flow — allow, notify,
- * prompt (allow once/session/always, deny, deny with reason), block —
- * with a fake UI/bus and a real audit file. Verifies events, grants,
- * audit entries and block reasons end-to-end.
- */
-import { describe, it, after } from "node:test";
+import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { handleToolCall, toHomePath, type HandlerEnv } from "./handler.ts";
-import { CompositeGrantStore, MemoryGrantStore } from "./grants.ts";
 import { DEFAULT_CONFIG, type ImmunityConfig } from "./config.ts";
+import { handleToolCall, type HandlerEnv, type ScopedRuleViews } from "./handler.ts";
+import { SessionState } from "./session.ts";
 import { FakeBus, FakeUi } from "./testing.ts";
+import { writeRule } from "./rules.ts";
 import type { ToolRequest } from "./pipeline.ts";
+import type { VerdictResult } from "./llm-client.ts";
 
 const HOME = "/home/u";
-const CWD = "/repo";
-
-/** every audit dir created by makeEnv, removed after the suite */
-const tempDirs: string[] = [];
-after(() => {
-  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
-});
-
-function makeEnv(partial: Partial<HandlerEnv> = {}): {
-  ui: FakeUi;
-  bus: FakeBus;
-  grants: MemoryGrantStore;
-  auditDir: string;
-  env: HandlerEnv;
-} {
-  const ui = new FakeUi();
-  const bus = new FakeBus();
-  const grants = new MemoryGrantStore();
-  const auditDir = mkdtempSync(join(import.meta.dirname, ".test-tmp-"));
-  tempDirs.push(auditDir);
-  const env: HandlerEnv = {
-    config: DEFAULT_CONFIG,
-    grants: new CompositeGrantStore([grants]),
-    sessionGrants: grants,
-    bus,
-    sessionId: "sess-test",
-    cwd: CWD,
-    home: HOME,
-    ui,
-    auditFile: join(auditDir, "audit.jsonl"),
-    ruleScope: join(auditDir, "immunity.json"),
-    ...partial,
-  };
-  return { ui, bus, grants, auditDir, env };
+const tmpDirs: string[] = [];
+function tmp(): string {
+  const dir = mkdtempSync(join(import.meta.dirname, ".test-tmp-"));
+  tmpDirs.push(dir);
+  return dir;
 }
-
-const bash = (command: string): ToolRequest => ({ kind: "bash", command, cwd: CWD, home: HOME });
-const file = (target: string, access: "read" | "modify" = "modify"): ToolRequest => ({
-  kind: "file",
-  tool: "edit",
-  target,
-  access,
-  cwd: CWD,
-  home: HOME,
+after(() => {
+  for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
 });
 
 function auditLines(dir: string): Record<string, unknown>[] {
-  const p = join(dir, "audit.jsonl");
+  const file = join(dir, "audit.jsonl");
   try {
-    return readFileSync(p, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    return readFileSync(file, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as Record<string, unknown>);
   } catch {
     return [];
   }
 }
 
-describe("allow path", () => {
-  it("allows benign commands without prompting or auditing", async () => {
-    const { ui, bus, auditDir, env } = makeEnv();
-    const r = await handleToolCall(bash("ls -la"), env);
+interface EnvOpts {
+  config?: Partial<ImmunityConfig>;
+  rules?: Partial<ScopedRuleViews>;
+  llmClient?: (command: string, opts: { cwd: string; policy: string }) => Promise<VerdictResult>;
+  gitIgnoreCheck?: (path: string, cwd: string) => Promise<boolean>;
+  onPromptCommand?: (command: string, env: Record<string, string>) => void;
+  pathKindFor?: (target: string) => "file" | "directory";
+  session?: SessionState;
+}
+
+function makeEnv(o: EnvOpts = {}): { env: HandlerEnv; ui: FakeUi; dir: string; bus: FakeBus } {
+  const dir = tmp();
+  mkdirSync(join(dir, "repo"));
+  const config: ImmunityConfig = {
+    ...DEFAULT_CONFIG,
+    ...o.config,
+    commands: { ...DEFAULT_CONFIG.commands, ...o.config?.commands },
+    llm: { ...DEFAULT_CONFIG.llm, ...o.config?.llm },
+    paths: { ...DEFAULT_CONFIG.paths, ...o.config?.paths },
+    hooks: { ...DEFAULT_CONFIG.hooks, ...o.config?.hooks },
+  };
+  const rules: ScopedRuleViews = {
+    paths: {
+      project: [...(o.rules?.paths?.project ?? [])],
+      global: [...(o.rules?.paths?.global ?? [])],
+    },
+    commands: {
+      project: [...(o.rules?.commands?.project ?? [])],
+      global: [...(o.rules?.commands?.global ?? [])],
+    },
+  };
+  const ui = new FakeUi();
+  const bus = new FakeBus();
+  const env: HandlerEnv = {
+    config,
+    rules,
+    session: o.session ?? new SessionState(),
+    bus,
+    sessionId: "test-session",
+    cwd: join(dir, "repo"),
+    home: HOME,
+    ui,
+    auditFile: join(dir, "audit.jsonl"),
+    ruleScope: join(dir, "project-immunity.json"),
+    globalRuleScope: join(dir, "global-immunity.json"),
+    llmClient: o.llmClient,
+    gitIgnoreCheck: o.gitIgnoreCheck ?? (async () => false),
+    onPromptCommand: o.onPromptCommand ?? (() => {}),
+    pathKindFor: o.pathKindFor,
+  };
+  // mirror index.ts writeRuleEffective: persist + reflect into the scoped views
+  env.saveRule = async (kind, value, scope, w) => {
+    const ok = writeRule(scope === "global" ? env.globalRuleScope : env.ruleScope, kind, value, w);
+    if (!ok) return false;
+    const paths = scope === "global" ? env.rules.paths.global : env.rules.paths.project;
+    const commands = scope === "global" ? env.rules.commands.global : env.rules.commands.project;
+    const pathKind = w?.pathKind ?? "file";
+    switch (kind) {
+      case "commandAllow":
+        commands.push({ action: "allow", exact: true, raw: value });
+        break;
+      case "commandDeny":
+        commands.push({ action: "deny", exact: true, raw: value });
+        break;
+      case "pathAllow":
+        paths.push({ action: "allow", kind: pathKind, path: value });
+        break;
+      case "pathDeny":
+        paths.push({ action: "deny", kind: pathKind, path: value });
+        break;
+    }
+    return true;
+  };
+  return { env, ui, dir, bus };
+}
+
+const bash = (command: string): ToolRequest => ({ kind: "bash", command, cwd: "/repo", home: HOME });
+const file = (target: string, tool = "read"): ToolRequest => ({ kind: "file", tool, target, cwd: "/repo", home: HOME });
+const LLM_OFF = { ...DEFAULT_CONFIG.llm, disabled: true };
+const verdict = (risk: "none" | "low" | "high", outcome: "ALLOWED" | "DENY" | "ASK_USER"): VerdictResult => ({ ok: true, verdict: { risk, outcome } });
+
+describe("handleToolCall — allow paths", () => {
+  it("file inside cwd, no rules, non-strict → allow, no menu, no audit", async () => {
+    const { env, ui, dir } = makeEnv({ config: { strict: false, llm: LLM_OFF } });
+    const r = await handleToolCall(file("./a.ts"), env);
     assert.deepEqual(r, { allow: true });
     assert.equal(ui.selectCalls.length, 0);
-    assert.equal(bus.events.length, 0);
-    assert.deepEqual(auditLines(auditDir), []);
+    assert.deepEqual(auditLines(dir), []);
   });
 
-  it("notifies (and allows) when requireConfirmation is off", async () => {
-    const { ui, env } = makeEnv({
-      config: {
-        ...DEFAULT_CONFIG,
-        prompting: { ...DEFAULT_CONFIG.prompting, requireConfirmation: false },
-      },
+  it("project allow rule → allow without menu", async () => {
+    const { env, ui } = makeEnv({
+      config: { llm: LLM_OFF },
+      rules: { paths: { project: [{ action: "allow", kind: "file", path: "./x" }] } },
     });
-    const r = await handleToolCall(bash("rm -rf ~/tmp"), env);
-    assert.deepEqual(r, { allow: true });
-    assert.equal(ui.notifyCalls.length, 1);
-    assert.ok(ui.notifyCalls[0].message.includes("rm -rf"));
-  });
-
-  it("warns on tree-sitter degradation but still allows benign calls", async () => {
-    const { ui, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, treeSitter: { binPath: "nope", grammarDir: null } },
-    });
-    const r = await handleToolCall(bash("ls -la"), env);
-    assert.deepEqual(r, { allow: true });
-    assert.ok(ui.notifyCalls.some((n) => n.message.includes("tree-sitter")));
-  });
-});
-
-describe("block path", () => {
-  it("blocks deterministic deny, audits it, and emits the blocked event", async () => {
-    const { ui, bus, auditDir, env } = makeEnv();
-    const r = await handleToolCall(bash("mkfs.ext4 /dev/sdb1"), env);
-    assert.equal(r.allow, false);
-    assert.ok(r.reason.startsWith("Blocked by policy:"));
-    assert.equal(ui.selectCalls.length, 0, "no prompt for auto-denies");
-    assert.equal(bus.events.length, 1);
-    assert.equal(bus.events[0].channel, "immunity:action:blocked");
-    const lines = auditLines(auditDir);
-    assert.equal(lines.length, 1);
-    assert.equal(lines[0].source, "policy");
-    assert.equal(lines[0].action, "mkfs.ext4 /dev/sdb1");
-    assert.equal(lines[0].sessionId, "sess-test");
-  });
-
-  it("blocks autoDeny patterns with source autoDeny", async () => {
-    const { bus, auditDir, env } = makeEnv({
-      config: {
-        ...DEFAULT_CONFIG,
-        commands: { ...DEFAULT_CONFIG.commands, autoDenyPatterns: ["git push --force"] },
-      },
-    });
-    const r = await handleToolCall(bash("git push --force"), env);
-    assert.equal(r.allow, false);
-    assert.ok(r.reason.startsWith("Blocked by autoDeny:"));
-    const blocked = bus.events[0].data as { block: { source: string } };
-    assert.equal(blocked.block.source, "autoDeny");
-    assert.equal(auditLines(auditDir)[0].source, "autoDeny");
-  });
-
-  it("prompts on protected file writes and audits the block", async () => {
-    const { ui, bus, auditDir, env } = makeEnv({
-      config: {
-        ...DEFAULT_CONFIG,
-        pathnames: { protected: [{ pattern: "**/.env*", mode: "modify" }], allowed: [] },
-      },
-    });
-    ui.selects.push("Deny");
-    const r = await handleToolCall(file(".env"), env);
-    assert.equal(r.allow, false);
-    assert.equal(r.reason, "Blocked by user");
-    const blocked = bus.events.find((e) => e.channel === "immunity:action:blocked")?.data as { action: string };
-    assert.equal(blocked.action, "modify .env");
-    assert.equal(auditLines(auditDir)[0].tool, "edit");
-    assert.equal(auditLines(auditDir)[0].source, "user");
-  });
-
-  it("audit failures never crash the call", async () => {
-    const { env } = makeEnv({ auditFile: null });
-    const r = await handleToolCall(bash("mkfs.ext4 /dev/sdb1"), env);
-    assert.equal(r.allow, false);
-  });
-});
-
-describe("prompt flow", () => {
-  it("allow once proceeds without a grant event", async () => {
-    const { ui, bus, grants, env } = makeEnv();
-    ui.selects.push("Allow once");
-    const r = await handleToolCall(bash("rm -rf ~/tmp"), env);
-    assert.deepEqual(r, { allow: true });
-    assert.equal(grants.check("bash:rm -rf ~/tmp"), null);
-    assert.ok(bus.events.some((e) => e.channel === "immunity:prompt:opened"));
-    assert.ok(bus.events.some((e) => e.channel === "immunity:prompt:closed"));
-    assert.equal(bus.events.some((e) => e.channel === "immunity:grant:created"), false);
-  });
-
-  it("allow for session records the grant and emits grant:created", async () => {
-    const { ui, bus, grants, env } = makeEnv();
-    ui.selects.push("Allow for session");
-    const r = await handleToolCall(bash("rm -rf ~/tmp"), env);
-    assert.deepEqual(r, { allow: true });
-    assert.equal(grants.check("bash:rm -rf ~/tmp"), "session");
-    assert.ok(bus.events.some((e) => e.channel === "immunity:grant:created"));
-  });
-
-  it("a session grant short-circuits the next identical call", async () => {
-    const { ui, bus, grants, env } = makeEnv();
-    ui.selects.push("Allow for session");
-    await handleToolCall(bash("rm -rf ~/tmp"), env);
-    ui.selectCalls.length = 0;
-    bus.events.length = 0;
-    const r = await handleToolCall(bash("rm -rf ~/tmp"), env);
+    const r = await handleToolCall(file("./x"), env);
     assert.deepEqual(r, { allow: true });
     assert.equal(ui.selectCalls.length, 0);
-    assert.equal(bus.events.length, 0, "granted calls emit nothing");
   });
 
-  it("always allow persists to commands.allowed and emits grant:created", async () => {
-    const { ui, bus, env } = makeEnv();
-    ui.selects.push("Always allow");
-    const r = await handleToolCall(bash("rm -rf ~/tmp"), env);
-    assert.deepEqual(r, { allow: true });
-    const raw = JSON.parse(readFileSync(env.ruleScope, "utf8")) as { commands: { allowed: string[] } };
-    assert.deepEqual(raw.commands.allowed, ["rm -rf ~/tmp"]);
-    const grant = bus.events.find((e) => e.channel === "immunity:grant:created")?.data as {
-      grant: { scope: string; persisted: boolean };
-    };
-    assert.equal(grant.grant.scope, "always");
-    assert.equal(grant.grant.persisted, true);
-  });
-
-  it("deny blocks with source user and a plain block message", async () => {
-    const { ui, bus, auditDir, env } = makeEnv();
-    ui.selects.push("Deny");
-    const r = await handleToolCall(bash("rm -rf ~/tmp"), env);
-    assert.equal(r.allow, false);
-    assert.equal(r.reason, "Blocked by user");
-    const blocked = bus.events.find((e) => e.channel === "immunity:action:blocked")?.data as {
-      block: { source: string };
-    };
-    assert.equal(blocked.block.source, "user");
-    assert.equal(auditLines(auditDir)[0].source, "user");
-  });
-
-  it("deny with reason carries the reason into the block message and audit", async () => {
-    const { ui, bus, auditDir, env } = makeEnv();
-    ui.selects.push("Deny with reason");
-    ui.inputs.push("I'll do it manually");
-    const r = await handleToolCall(bash("rm -rf ~/tmp"), env);
-    assert.equal(r.allow, false);
-    assert.equal(r.reason, "Blocked by user: I'll do it manually");
-    const line = auditLines(auditDir)[0];
-    assert.equal(line.userReason, "I'll do it manually");
-    assert.equal(line.source, "user");
-  });
-
-  it("deny with reason + remember-rule writes an autoDeny rule", async () => {
-    const { ui, env } = makeEnv();
-    ui.selects.push("Deny with reason", "Block this command pattern");
-    ui.inputs.push("never again");
-    const r = await handleToolCall(bash("rm -rf ~/tmp"), env);
-    assert.equal(r.allow, false);
-    const raw = JSON.parse(readFileSync(env.ruleScope, "utf8")) as { commands: { autoDenyPatterns: string[] } };
-    assert.deepEqual(raw.commands.autoDenyPatterns, ["rm -rf ~/tmp"]);
-  });
-
-  it("prompt:closed fires even when the UI throws", async () => {
-    const { ui, bus, env } = makeEnv();
-    ui.failNext("select");
-    const r = await handleToolCall(bash("rm -rf ~/tmp"), env);
-    assert.equal(r.allow, false, "UI failure denies");
-    assert.ok(bus.events.some((e) => e.channel === "immunity:prompt:closed"));
-  });
-});
-
-describe("llm verdict trail", () => {
-  it("records an ALLOWED verdict for benign commands when llm is on", async () => {
-    const { auditDir, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true, provider: "opencode-go", model: "m" } },
-      llmClient: async () => ({ ok: true, verdict: { risk: "none", outcome: "ALLOWED", reason: "benign" } }),
-    });
+  it("bash + LLM ALLOWED verdict → allow; verdict trail audited", async () => {
+    const { env, dir } = makeEnv({ llmClient: async () => verdict("none", "ALLOWED") });
     const r = await handleToolCall(bash("ls -la"), env);
     assert.deepEqual(r, { allow: true });
-    const lines = auditLines(auditDir);
-    assert.equal(lines.length, 1);
-    assert.equal(lines[0].event, "verdict");
-    assert.equal(lines[0].action, "ls -la");
-    assert.equal(lines[0].outcome, "ALLOWED");
-    assert.equal(lines[0].reason, "benign");
-    assert.equal(lines[0].llm.model, "m");
-  });
-
-  it("records DENY verdicts and the block entry when autoDeny blocks", async () => {
-    const { auditDir, env } = makeEnv({
-      config: {
-        ...DEFAULT_CONFIG,
-        llm: { ...DEFAULT_CONFIG.llm, enabled: true, autoDeny: true },
-      },
-      llmClient: async () => ({ ok: true, verdict: { risk: "high", outcome: "DENY", reason: "force push" } }),
-    });
-    const r = await handleToolCall(bash("git push --force"), env);
-    assert.equal(r.allow, false);
-    const lines = auditLines(auditDir);
-    assert.equal(lines.length, 2);
-    assert.ok(lines.some((l) => l.event === "verdict" && l.outcome === "DENY"));
-    assert.ok(lines.some((l) => l.event === "block" && l.source === "llm"));
-  });
-
-  it("confirm mode: ALLOWED verdict prompts with the verdict; user allow → runs", async () => {
-    const { ui, auditDir, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true, confirm: true } },
-      llmClient: async () => ({ ok: true, verdict: { risk: "none", outcome: "ALLOWED", reason: "benign" } }),
-    });
-    ui.selects.push("Allow once");
-    const r = await handleToolCall(bash("ls -la"), env);
-    assert.deepEqual(r, { allow: true });
-    assert.equal(ui.selectCalls.length, 1);
-    assert.match(ui.selectCalls[0].title, /ALLOWED \(risk none\)/);
-    const lines = auditLines(auditDir);
+    const lines = auditLines(dir);
     assert.equal(lines.length, 1);
     assert.equal(lines[0].event, "verdict");
     assert.equal(lines[0].outcome, "ALLOWED");
   });
+});
 
-  it("confirm mode: ALLOWED verdict prompts; user deny → block + audit", async () => {
-    const { ui, auditDir, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true, confirm: true } },
-      llmClient: async () => ({ ok: true, verdict: { risk: "none", outcome: "ALLOWED", reason: "benign" } }),
-    });
-    ui.selects.push("Deny");
-    const r = await handleToolCall(bash("ls -la"), env);
+describe("handleToolCall — outside cwd boundary + menu", () => {
+  it("outside file → prompt → Allow for session → allowed; session short-circuits next call", async () => {
+    const { env, ui } = makeEnv({ config: { llm: LLM_OFF } });
+    ui.selects.push("Allow for session");
+    const r = await handleToolCall(file("/etc/hosts"), env);
+    assert.deepEqual(r, { allow: true });
+    assert.equal(ui.selectCalls.length, 2, "main menu + path-kind follow-up");
+    // second identical call: no prompt, no menu
+    const r2 = await handleToolCall(file("/etc/hosts"), env);
+    assert.deepEqual(r2, { allow: true });
+    assert.equal(ui.selectCalls.length, 2);
+  });
+
+  it("outside file → Block for project + reason → blocked; rule + audit written", async () => {
+    const { env, ui, dir } = makeEnv({ config: { llm: LLM_OFF } });
+    ui.selects.push("Block for project", undefined, "Yes"); // follow-up dismissed → file rule
+    ui.inputs.push("never touch /etc/hosts");
+    const r = await handleToolCall(file("/etc/hosts"), env);
     assert.equal(r.allow, false);
-    const lines = auditLines(auditDir);
-    assert.ok(lines.some((l) => l.event === "verdict" && l.outcome === "ALLOWED"));
-    assert.ok(lines.some((l) => l.event === "block" && l.source === "user"));
+    assert.match(r.reason, /Blocked by user: never touch \/etc\/hosts/);
+
+    const raw = JSON.parse(readFileSync(join(dir, "project-immunity.json"), "utf8"));
+    assert.deepEqual(raw.paths.rules, [{ action: "deny", kind: "file", path: "/etc/hosts" }]);
+
+    const lines = auditLines(dir);
+    const rule = lines.find((l) => l.event === "rule");
+    assert.equal(rule?.kind, "pathDeny");
+    assert.equal(rule?.scope, "project");
+    assert.equal(rule?.persisted, true);
+    const block = lines.find((l) => l.event === "block");
+    assert.equal(block?.source, "user");
+    assert.equal(block?.userReason, "never touch /etc/hosts");
   });
 
-  it("outside-cwd file access prompts; user allow → runs, user deny → block", async () => {
-    const { ui, auditDir, env } = makeEnv();
-    ui.selects.push("Allow once");
-    const allowed = await handleToolCall(file("~/keys/a.pem", "read"), env);
-    assert.deepEqual(allowed, { allow: true });
-    assert.equal(ui.selectCalls.length, 1);
-    assert.match(ui.selectCalls[0].title, /outside project cwd/);
-    assert.deepEqual(auditLines(auditDir), [], "allow leaves no audit entry");
-
-    const { ui: ui2, auditDir: auditDir2, env: env2 } = makeEnv();
-    ui2.selects.push("Deny");
-    const denied = await handleToolCall(file("~/keys/a.pem", "read"), env2);
-    assert.equal(denied.allow, false);
-    const lines = auditLines(auditDir2);
-    assert.equal(lines.length, 1);
-    assert.equal(lines[0].event, "block");
-    assert.equal(lines[0].source, "user");
+  it("Allow globally writes to the global scope file", async () => {
+    const { env, ui, dir } = makeEnv({ config: { llm: LLM_OFF } });
+    ui.selects.push("Allow globally");
+    const r = await handleToolCall(file("/etc/hosts"), env);
+    assert.deepEqual(r, { allow: true });
+    const raw = JSON.parse(readFileSync(join(dir, "global-immunity.json"), "utf8"));
+    assert.deepEqual(raw.paths.rules, [{ action: "allow", kind: "file", path: "/etc/hosts" }]);
+    // and the scoped view reflects it (effective immediately)
+    assert.deepEqual(env.rules.paths.global.map((x) => x.path), ["/etc/hosts"]);
   });
 
-  it("protect-path suggestion: writes the rule, blocks, audits rule + block", async () => {
-    const saved: { kind: string; value: string; scope?: string }[] = [];
-    const { ui, auditDir, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
-      llmClient: async () => ({
-        ok: true,
-        verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["~/.ssh/id_rsa"] } },
-      }),
-      saveRule: async (kind, value, scope) => {
-        saved.push({ kind, value, scope });
-        return true;
-      },
-    });
-    ui.selects.push("Protect ~/.ssh/id_rsa (project)");
-    const r = await handleToolCall(bash("cat ~/.ssh/id_rsa"), env);
+  it("path rule kind comes from pathKindFor", async () => {
+    const { env, ui, dir } = makeEnv({ config: { llm: LLM_OFF }, pathKindFor: () => "directory" });
+    ui.selects.push("Allow for project");
+    const r = await handleToolCall(file("/etc/hosts"), env);
+    assert.deepEqual(r, { allow: true });
+    const raw = JSON.parse(readFileSync(join(dir, "project-immunity.json"), "utf8"));
+    assert.equal(raw.paths.rules[0].kind, "directory");
+  });
+
+  it("Allow for project on a file can widen to the containing directory", async () => {
+    const { env, ui, dir } = makeEnv({ config: { llm: LLM_OFF } });
+    ui.selects.push("Allow for project", "The whole directory (recursive)");
+    const r = await handleToolCall(file("/etc/hosts"), env);
+    assert.deepEqual(r, { allow: true });
+    const raw = JSON.parse(readFileSync(join(dir, "project-immunity.json"), "utf8"));
+    assert.deepEqual(raw.paths.rules, [{ action: "allow", kind: "directory", path: "/etc" }]);
+    assert.deepEqual(env.rules.paths.project, [{ action: "allow", kind: "directory", path: "/etc" }]);
+  });
+
+  it("dismissed prompt → blocked, nothing leaks", async () => {
+    const { env, ui } = makeEnv({ config: { llm: LLM_OFF } });
+    ui.selects.push(undefined);
+    const r = await handleToolCall(file("/etc/hosts"), env);
     assert.equal(r.allow, false);
-    assert.deepEqual(saved, [{ kind: "path", value: "~/.ssh/id_rsa", scope: "project" }]);
-    const lines = auditLines(auditDir);
-    assert.ok(lines.some((l) => l.event === "rule" && l.kind === "path" && l.value === "~/.ssh/id_rsa" && l.scope === "project"));
-    assert.ok(lines.some((l) => l.event === "block" && l.source === "user"));
-    assert.ok(lines.some((l) => l.event === "verdict"));
+    assert.match(r.reason, /Blocked by user/);
+  });
+});
+
+describe("handleToolCall — bash verdicts and silent blocks", () => {
+  it("LLM DENY + promptWhen asked → silent block, no menu", async () => {
+    const { env, ui } = makeEnv({
+      config: { commands: { ...DEFAULT_CONFIG.commands, promptWhen: "asked" } },
+      llmClient: async () => verdict("high", "DENY"),
+    });
+    const r = await handleToolCall(bash("rm -rf x"), env);
+    assert.equal(r.allow, false);
+    assert.match(r.reason, /Blocked by llm/);
+    assert.equal(ui.selectCalls.length, 0);
   });
 
-  it("block-command suggestion: writes an autoDeny pattern, blocks", async () => {
-    const saved: { kind: string; value: string; scope?: string }[] = [];
-    const { ui, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
-      llmClient: async () => ({
-        ok: true,
-        verdict: { risk: "high", outcome: "DENY", commands: { blocked: [{ raw: "git push --force", general: "git push" }] } },
-      }),
-      saveRule: async (kind, value, scope) => {
-        saved.push({ kind, value, scope });
-        return true;
-      },
+  it("LLM DENY + blocked (default) → prompt → user blocks with session statement", async () => {
+    const { env, ui, dir } = makeEnv({ llmClient: async () => verdict("high", "DENY") });
+    ui.selects.push("Block for session", "No");
+    const r = await handleToolCall(bash("rm -rf x"), env);
+    assert.equal(r.allow, false);
+    assert.ok(env.session.isDenied("bash:rm -rf x"));
+    const lines = auditLines(dir);
+    const ses = lines.find((l) => l.event === "session");
+    assert.equal(ses?.kind, "sessionDeny");
+  });
+
+  it("fallback deny rule (LLM disabled) + asked → silent block; blocked → prompt", async () => {
+    const { env, ui } = makeEnv({
+      config: { llm: LLM_OFF, commands: { ...DEFAULT_CONFIG.commands, promptWhen: "asked" } },
+      rules: { commands: { project: [{ action: "deny", exact: true, raw: "git push --force" }] } },
     });
-    ui.selects.push("Block git push --force");
     const r = await handleToolCall(bash("git push --force"), env);
     assert.equal(r.allow, false);
-    assert.deepEqual(saved, [{ kind: "autoDeny", value: "git push --force", scope: "project" }]);
-  });
+    assert.match(r.reason, /Blocked by policy/);
+    assert.equal(ui.selectCalls.length, 0);
 
-  it("allow-path suggestion: writes the rule, retries the pipeline, the LLM allows", async () => {
-    let calls = 0;
-    const saved: { kind: string; value: string; scope?: string }[] = [];
-    const { ui, auditDir, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
-      llmClient: async () => {
-        calls++;
-        return calls === 1
-          ? { ok: true, verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["~/.ssh/id_rsa"] } } }
-          : { ok: true, verdict: { risk: "none", outcome: "ALLOWED" } };
-      },
-      persistGrant: async (kind, value, scope) => {
-        saved.push({ kind, value, scope });
-        return true;
-      },
+    const { env: env2, ui: ui2 } = makeEnv({
+      config: { llm: LLM_OFF },
+      rules: { commands: { project: [{ action: "deny", exact: true, raw: "git push --force" }] } },
     });
-    ui.selects.push("Allow ~/.ssh/id_rsa (project)");
-    const r = await handleToolCall(bash("cat ~/.ssh/id_rsa"), env);
-    assert.deepEqual(r, { allow: true });
-    assert.equal(calls, 2, "retry re-runs the analysis with the updated policy");
-    assert.deepEqual(saved, [{ kind: "path", value: "~/.ssh/id_rsa", scope: "project" }]);
-    const lines = auditLines(auditDir);
-    assert.ok(lines.some((l) => l.event === "rule" && l.kind === "pathAllow" && l.scope === "project"));
-    assert.equal(lines.filter((l) => l.event === "verdict").length, 2);
+    ui2.selects.push("Allow for session");
+    const r2 = await handleToolCall(bash("git push --force"), env2);
+    assert.deepEqual(r2, { allow: true });
   });
 
-  it("allow-path suggestion caps retries at 2, then honors the override", async () => {
-    let calls = 0;
-    const { ui, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
-      llmClient: async () => {
-        calls++;
-        return { ok: true, verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["~/.ssh/id_rsa"] } } };
-      },
-      persistGrant: async () => true,
+  it("DENY with suggestions: protect → command blocked, rule written, no command menu", async () => {
+    const { env, ui, dir } = makeEnv({
+      llmClient: async () => ({
+        ok: true,
+        verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
+      }),
     });
-    ui.selects.push("Allow ~/.ssh/id_rsa (project)", "Allow ~/.ssh/id_rsa (project)", "Allow ~/.ssh/id_rsa (project)");
-    const r = await handleToolCall(bash("cat ~/.ssh/id_rsa"), env);
-    assert.deepEqual(r, { allow: true });
-    assert.equal(calls, 3, "two retries, then the user's explicit override wins");
-  });
-
-  it("glob-ish suggested paths are audit-only: no menu options, concrete ones render", async () => {
-    const saved: { value: string; scope?: string }[] = [];
-    let calls = 0;
-    const { ui, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
-      llmClient: async () => {
-        calls++;
-        return calls === 1
-          ? { ok: true, verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["~/repos/*", "~/.ssh/id_rsa"] } } }
-          : { ok: true, verdict: { risk: "none", outcome: "ALLOWED" } };
-      },
-      persistGrant: async (kind, value, scope) => {
-        saved.push({ value, scope });
-        return true;
-      },
-    });
-    ui.selects.push("Allow ~/.ssh/id_rsa (project)");
-    const r = await handleToolCall(bash("ls ~/.ssh/id_rsa"), env);
-    assert.deepEqual(r, { allow: true });
-    assert.deepEqual(saved, [{ value: "~/.ssh/id_rsa", scope: "project" }]);
-    const labels = ui.selectCalls[0].options;
-    assert.ok(labels.some((l) => l.includes("Allow ~/.ssh/id_rsa")), "concrete path renders");
-    assert.ok(!labels.some((l) => l.includes("~/repos/*")), "glob suggestion never renders as an option");
-  });
-
-  it("records inconclusive failures in the verdict trail", async () => {
-    const { auditDir, env } = makeEnv({
-      config: { ...DEFAULT_CONFIG, llm: { ...DEFAULT_CONFIG.llm, enabled: true } },
-      llmClient: async () => ({ ok: false, kind: "timeout", error: "slow model" }),
-    });
-    const r = await handleToolCall(bash("ls -la"), env);
-    assert.equal(r.allow, false, "inconclusive prompts");
-    const v = auditLines(auditDir).find((l) => l.event === "verdict");
-    assert.equal(v?.failure, "timeout: slow model");
-  });
-
-  it("writes nothing when llm is off", async () => {
-    const { auditDir, env } = makeEnv(); // DEFAULT_CONFIG: llm.enabled false
-    await handleToolCall(bash("ls -la"), env);
-    assert.deepEqual(auditLines(auditDir), []);
-  });
-});
-
-describe("file prompts", () => {
-  it("offers Protect this path and writes pathnames.protected", async () => {
-    const { ui, env } = makeEnv({
-      config: {
-        ...DEFAULT_CONFIG,
-        pathnames: { protected: [{ pattern: "**/.env*", mode: "modify" }], allowed: [] },
-      },
-    });
-    ui.selects.push("Deny with reason", "Protect this path");
-    ui.inputs.push("secrets");
-    const r = await handleToolCall(file(".env"), env);
+    ui.selects.push("Protect for project");
+    const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
     assert.equal(r.allow, false);
-    const raw = JSON.parse(readFileSync(env.ruleScope, "utf8")) as { pathnames: { protected: unknown[] } };
-    assert.deepEqual(raw.pathnames.protected, [{ pattern: "/repo/.env", mode: "modify" }]);
+    assert.match(r.reason, /command touches protected path \/Users\/alican\/repos/);
+    const raw = JSON.parse(readFileSync(join(dir, "project-immunity.json"), "utf8"));
+    assert.deepEqual(raw.paths.rules, [{ action: "deny", kind: "file", path: "/Users/alican/repos" }]);
+    assert.equal(ui.selectCalls.length, 1, "suggestion dialog only — no command menu");
+    const lines = auditLines(dir);
+    const rule = lines.find((l) => l.event === "rule");
+    assert.equal(rule?.kind, "pathDeny");
+    assert.equal(rule?.source, "suggestion");
+    const block = lines.find((l) => l.event === "block");
+    assert.match(block?.reason ?? "", /touches protected path/);
   });
 
-  it("always allow on a file persists a ~-relative path allow", async () => {
-    const { ui, bus, env } = makeEnv({
-      config: {
-        ...DEFAULT_CONFIG,
-        pathnames: { protected: [{ pattern: "**/.env*", mode: "modify" }], allowed: [] },
-      },
+  it("DENY with suggestions: all skipped → six-option menu still appears", async () => {
+    const { env, ui } = makeEnv({
+      llmClient: async () => ({
+        ok: true,
+        verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
+      }),
     });
-    ui.selects.push("Always allow");
-    const r = await handleToolCall(file("~/secrets/.env", "modify"), env);
+    ui.selects.push("Skip", "Allow for session");
+    const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
     assert.deepEqual(r, { allow: true });
-    const raw = JSON.parse(readFileSync(env.ruleScope, "utf8")) as { pathnames: { allowed: unknown[] } };
-    assert.deepEqual(raw.pathnames.allowed, [{ kind: "file", path: "~/secrets/.env" }]);
+    assert.equal(ui.selectCalls.length, 2, "suggestion dialog + command menu");
+    assert.ok(env.session.isAllowed("bash:find ~/repos -maxdepth 1 -type d | wc -l"));
+  });
+
+  it("DENY with suggestions: allow path for session, then allow the command", async () => {
+    const { env, ui, dir } = makeEnv({
+      llmClient: async () => ({
+        ok: true,
+        verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
+      }),
+    });
+    ui.selects.push("Allow for session", "Allow for session");
+    const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
+    assert.deepEqual(r, { allow: true });
+    assert.ok(env.session.isAllowed("file:/Users/alican/repos"));
+    assert.ok(env.session.isAllowed("bash:find ~/repos -maxdepth 1 -type d | wc -l"));
+    const ses = auditLines(dir).filter((l) => l.event === "session");
+    assert.equal(ses.length, 2, "path statement + command statement");
+  });
+
+  it("inconclusive LLM + no rules + strict (default) → prompt; strict:false → allow", async () => {
+    const inconclusive = { ok: false as const, kind: "timeout" as const, error: "no verdict" };
+    const { env, ui } = makeEnv({ llmClient: async () => inconclusive });
+    ui.selects.push("Allow for session");
+    const r = await handleToolCall(bash("ls -la"), env);
+    assert.deepEqual(r, { allow: true });
+
+    const { env: env2, ui: ui2 } = makeEnv({ config: { strict: false }, llmClient: async () => inconclusive });
+    const r2 = await handleToolCall(bash("ls -la"), env2);
+    assert.deepEqual(r2, { allow: true });
+    assert.equal(ui2.selectCalls.length, 0);
+  });
+
+  it("Block for project on a command writes an exact deny rule", async () => {
+    const { env, ui, dir } = makeEnv({
+      config: { llm: LLM_OFF },
+      rules: { commands: { project: [{ action: "ask", exact: false, raw: "npm install" }] } },
+    });
+    ui.selects.push("Block for project", "No");
+    const r = await handleToolCall(bash("npm install lodash"), env);
+    assert.equal(r.allow, false);
+    const raw = JSON.parse(readFileSync(join(dir, "project-immunity.json"), "utf8"));
+    assert.deepEqual(raw.commands.rules, [{ action: "deny", exact: true, raw: "npm install lodash" }]);
+    assert.deepEqual(env.rules.commands.project.map((x) => x.raw), ["npm install", "npm install lodash"]);
   });
 });
 
-describe("toHomePath", () => {
-  it("rewrites home-relative targets for durable grants", () => {
-    assert.equal(toHomePath("/home/u/keys/a.pem", "/home/u"), "~/keys/a.pem");
-    assert.equal(toHomePath("/home/u", "/home/u"), "~");
-    assert.equal(toHomePath("/repo/a", "/home/u"), "/repo/a");
-    assert.equal(toHomePath("/home/others/x", "/home/u"), "/home/others/x", "sibling prefix not rewritten");
+describe("handleToolCall — hooks", () => {
+  it("hooks.afterPrompt runs before the menu with context env", async () => {
+    let seen: { command: string; env: Record<string, string> } | null = null;
+    const { env, ui } = makeEnv({
+      config: { llm: LLM_OFF, hooks: { afterPrompt: "notify-send x" } },
+      onPromptCommand: (command, e) => {
+        seen = { command, env: e };
+      },
+    });
+    ui.selects.push("Block for session", "No");
+    await handleToolCall(file("/etc/hosts"), env);
+    assert.equal(seen?.command, "notify-send x");
+    assert.equal(seen?.env.IMMUNITY_FEATURE, "file");
+    assert.ok(seen?.env.IMMUNITY_PROMPT_ID);
+    assert.ok(seen?.env.IMMUNITY_REASON);
   });
 });

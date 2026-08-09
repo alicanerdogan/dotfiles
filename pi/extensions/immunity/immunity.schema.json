@@ -1,109 +1,80 @@
 {
-  "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://pi-immunity/schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "pi-immunity config",
-  "description": "Configuration for the pi-immunity permission-gate extension. Global: ~/.pi/agent/immunity.json (always honored). Project: <cwd>/.pi/immunity.json (honored when the project is trusted). Project files override scalar sections; list sections are unions with global entries first.",
+  "description": "Safety extension config. Shape is stable as of the 2025-08 rework; $schema entries are not written yet (added once the shape stabilizes).",
   "type": "object",
   "properties": {
-    "version": { "const": 1 },
-    "enabled": { "type": "boolean", "default": true },
-    "pathnames": {
+    "strict": {
+      "type": "boolean",
+      "default": true,
+      "description": "LLM unavailable AND no rule match → prompt the user (true) or allow (false)."
+    },
+    "paths": {
       "type": "object",
       "properties": {
-        "protected": {
+        "rules": {
           "type": "array",
-          "description": "Path patterns that require approval when touched. mode read = reading the path is gated, modify = writes/deletes are gated.",
           "items": {
             "type": "object",
+            "required": ["action", "kind", "path"],
             "properties": {
-              "pattern": { "type": "string", "description": "glob (or regex when regex: true); ~/ expands to home" },
-              "mode": { "enum": ["read", "modify"], "default": "modify" },
-              "onlyIfExists": { "type": "boolean", "default": false },
-              "regex": { "type": "boolean", "default": false }
-            },
-            "required": ["pattern", "mode"],
-            "additionalProperties": false
-          }
-        },
-        "allowed": {
-          "type": "array",
-          "description": "Exact allowances that bypass protection. kind file = the path itself, directory = the directory and descendants.",
-          "items": {
-            "type": "object",
-            "properties": {
-              "kind": { "enum": ["file", "directory"] },
-              "path": { "type": "string", "description": "exact path; ~/ expands to home" }
-            },
-            "required": ["kind", "path"],
-            "additionalProperties": false
+              "action": { "enum": ["ask", "allow", "deny"] },
+              "kind": { "enum": ["file", "directory"], "description": "directory = recursive (the directory and all descendants)" },
+              "path": {
+                "type": "string",
+                "description": "No globs. ~ allowed. Relative must start with ./",
+                "pattern": "^(~|~/|\\./|/)"
+              }
+            }
           }
         }
-      },
-      "additionalProperties": false
+      }
     },
     "commands": {
       "type": "object",
       "properties": {
-        "patterns": {
+        "rules": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "substring (or regex) patterns that prompt for approval"
+          "items": {
+            "type": "object",
+            "required": ["action", "raw"],
+            "properties": {
+              "action": { "enum": ["allow", "deny", "ask"] },
+              "exact": { "type": "boolean", "default": false, "description": "true → full-string match; false (default) → substring match" },
+              "raw": { "type": "string", "description": "Fed into the LLM prompt as policy" },
+              "regex": { "type": "string", "description": "Deterministic-only fallback matcher; never fed to the LLM" }
+            }
+          }
         },
-        "autoDenyPatterns": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "patterns blocked without prompting"
-        },
-        "allowed": {
-          "type": "array",
-          "items": { "type": "string" },
-          "description": "exact command strings always allowed (persisted always-grants)"
-        },
-        "useBuiltinMatchers": { "type": "boolean", "default": true }
-      },
-      "additionalProperties": false
+        "promptWhen": {
+          "enum": ["asked", "blocked", "everytime"],
+          "default": "blocked",
+          "description": "asked: only ask-rules prompt (LLM DENY blocks silently). blocked: asks and blocks prompt. everytime: prompt after every verdict (debugging)."
+        }
+      }
     },
     "llm": {
       "type": "object",
-      "description": "LLM verdict layer. Disabled by default; the deterministic rules run regardless.",
       "properties": {
-        "enabled": { "type": "boolean", "default": false },
-        "provider": { "type": "string", "description": "provider id; empty = pi default" },
-        "model": { "type": "string", "description": "model pattern; empty = provider default" },
-        "appendSystemPrompt": { "type": "string", "description": "extra instructions appended to the analyzer system prompt" },
-        "piPath": { "type": "string", "description": "pi binary path override (default: PATH lookup)" },
-        "timeoutMs": { "type": "number", "minimum": 100, "default": 30000 },
-        "autoDeny": { "type": "boolean", "default": false },
-        "confirm": { "type": "boolean", "default": false, "description": "Debug mode: an LLM ALLOWED verdict prompts the user (showing the verdict) instead of auto-allowing" }
-      },
-      "additionalProperties": false
+        "disabled": { "type": "boolean", "default": false, "description": "Opt-out: the analysis layer is enabled unless disabled" },
+        "provider": { "type": "string" },
+        "model": { "type": "string" },
+        "timeoutMs": { "type": "number", "minimum": 1, "default": 30000 },
+        "userPrompt": { "type": "string", "description": "User-authored policy text appended to the analyzer system prompt" },
+        "piPath": { "type": "string", "description": "pi binary for the headless analyzer subprocess (default: pi on PATH)" }
+      }
     },
-    "treeSitter": {
+    "hooks": {
       "type": "object",
       "properties": {
-        "binPath": { "type": "string", "default": "tree-sitter" },
-        "grammarDir": { "type": ["string", "null"], "default": null }
-      },
-      "additionalProperties": false
-    },
-    "prompting": {
-      "type": "object",
-      "properties": {
-        "requireConfirmation": { "type": "boolean", "default": true },
-        "askReasonOnDeny": { "type": "boolean", "default": true },
-        "sessionGrants": { "type": "boolean", "default": true },
-        "onPromptCommand": { "type": "string", "description": "bash command run before an approval prompt opens (fire-and-forget; env: IMMUNITY_PROMPT_ID, IMMUNITY_FEATURE, IMMUNITY_REASON, IMMUNITY_ACTION)" }
-      },
-      "additionalProperties": false
+        "afterPrompt": { "type": "string", "description": "Bash command run right before an approval prompt opens (context via IMMUNITY_* env vars)" }
+      }
     },
     "audit": {
       "type": "object",
       "properties": {
-        "enabled": { "type": "boolean", "default": true },
-        "file": { "type": "string", "description": "audit JSONL path; empty = <project>/.pi/immunity.audit.jsonl" }
-      },
-      "additionalProperties": false
+        "enabled": { "type": "boolean", "default": true }
+      }
     }
-  },
-  "additionalProperties": true
+  }
 }

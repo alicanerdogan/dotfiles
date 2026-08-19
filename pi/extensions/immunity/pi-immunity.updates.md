@@ -18,6 +18,7 @@ See [`pi-immunity.reflection.md`](pi-immunity.reflection.md) for the full ration
 - `paths.rules`: `{ action: "ask"|"allow"|"deny", kind: "file"|"directory", path }`.
 - `kind: "directory"` is **recursive** — covers all descendants, including files created later.
 - Hard defaults (not configurable): outside cwd → block; gitignored → block. Explicit allow rules override.
+- **Skill reads are never supervised**: `read` calls whose target lies under a directory named `skills` (every discovery root — agent dir, `~/.agents`, project `.pi`/`.agents`, packages, settings) bypass the pipeline entirely. Skill *loading* must not prompt, regardless of path rules or the hard defaults.
 - Future (low priority): read vs read/write access levels.
 
 ## Shell execution
@@ -33,18 +34,22 @@ See [`pi-immunity.reflection.md`](pi-immunity.reflection.md) for the full ration
 - LLM unavailable *and* no rule match: `strict: true` (default) prompts; `false` allows.
 - Tree-sitter is dropped entirely.
 
-## Handling blocked requests (unified menu)
+## Handling blocked requests
 
-Exactly six options for every blocked command and file path:
+**Whole commands** prompt with a plain Allow/Deny — a one-shot call decision, never scope-persisted (no rules, no session statements). Scope choices are reserved for the LLM's flagged subsections:
+
+- Suggestion step (bash, when the LLM verdict flagged paths): BEFORE the command decision, one dialog per flagged path: *Allow for session / Allow for project / Allow globally / Protect for project / Protect for global / Skip*. Allow writes `paths.rules {action: "allow"}` (session → in-memory statement); Protect writes `{action: "deny"}` (protect = deny). **Protecting a path answers the command question**: the command is blocked without showing the command menu. All skipped/allowed → the binary Allow/Deny command menu follows. `commands.blocked` suggestions stay audit-only.
+
+**File paths** keep the six-option scope menu — a path is a durable rule target:
 
 - Allow for session / Allow for project / Allow globally
 - Block for session / Block for project / Block globally
 
 - Session options are in-memory (allow-exempt and deny-exempt arrays, exact match).
-- Project/global options write rules: paths → `paths.rules` (action allow/deny, kind inferred or file); commands → `commands.rules` with `exact: true`, raw = the exact command string.
-- When the user picks a block option, they are asked whether they want to provide a reason (built-in, not configurable); a user-provided reason overwrites the model's reason; without one, the model's reason is kept in the block message.
-- Path rules: after an Allow/Block choice on a **file target**, one follow-up select asks *Just this file* vs *The whole directory (recursive)* (directory targets skip it — kind is inferred). A directory choice on a file target applies to the containing directory. Session directory statements are prefix-matching (covers descendants). The six-option menu itself never grows.
-- **Suggestion step** (bash, when the LLM verdict flagged paths): BEFORE the command menu, one dialog per flagged path: *Allow for session / Allow for project / Allow globally / Protect for project / Protect for global / Skip*. Allow writes `paths.rules {action: "allow"}` (session → in-memory statement); Protect writes `{action: "deny"}` (ask vs deny are functionally identical — protect = deny). **Protecting a path answers the command question**: the command is blocked without showing the command menu. All skipped/allowed → the six-option menu follows. `commands.blocked` suggestions stay audit-only. Only the user's click writes — suggestions never apply themselves.
+- Project/global options write rules: paths → `paths.rules` (action allow/deny, kind inferred or file); commands → `commands.rules` with `exact: true`, raw = the exact command string. (Command rules can no longer be written from the menu — whole commands are binary by design.)
+- When the user picks a block option (or Deny on a command), they are asked whether they want to provide a reason (built-in, not configurable); a user-provided reason overwrites the model's reason; without one, the model's reason is kept in the block message.
+- Path rules: after an Allow/Block choice on a **file target**, one follow-up select asks *Just this file* vs *The whole directory (recursive)* (directory targets skip it — kind is inferred). A directory choice on a file target applies to the containing directory. Session directory statements are prefix-matching (covers descendants).
+- One-shot command Allows are audited as `event: "decision"` with `scope: "call"`; binary Denies are block entries (source: user).
 - Only the user's click writes — suggestions never apply themselves; `commands.blocked` suggestions are audit-only.
 
 ## LLM config

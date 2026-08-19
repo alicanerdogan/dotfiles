@@ -81,7 +81,21 @@ export interface SessionAuditEntry {
   pathKind?: "file" | "directory";
 }
 
-export type AuditEntry = BlockAuditEntry | VerdictAuditEntry | RuleAuditEntry | SessionAuditEntry;
+/** A one-shot command decision (binary Allow) — the user let a flagged
+ * command through for this call only; nothing is persisted. Binary denies
+ * are recorded as block entries (source: user). */
+export interface DecisionAuditEntry {
+  event: "decision";
+  ts: string;
+  sessionId: string;
+  tool: string;
+  action: string;
+  kind: "allow";
+  scope: "call";
+  reason: string;
+}
+
+export type AuditEntry = BlockAuditEntry | VerdictAuditEntry | RuleAuditEntry | SessionAuditEntry | DecisionAuditEntry;
 
 export function defaultAuditPath(cwd: string, configDirName = ".pi"): string {
   return join(cwd, configDirName, "immunity.audit.jsonl");

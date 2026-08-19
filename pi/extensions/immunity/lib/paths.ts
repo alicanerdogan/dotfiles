@@ -54,6 +54,17 @@ export function expandPath(target: string, opts: { cwd: string; home: string }):
 }
 
 /**
+ * Is this a target inside a skills directory? Every pi skill discovery root
+ * uses a directory literally named "skills" — agent dir (`~/.pi/agent/skills`),
+ * `~/.agents/skills`, `.pi/skills` / `.agents/skills` in cwd and ancestors,
+ * package `skills/` dirs, `settings[].skills` entries. Reading skill files is
+ * always safe, so immunity never gates it.
+ */
+export function isSkillPath(target: string, opts: { cwd: string; home: string }): boolean {
+  return expandPath(target, opts).replace(/\\/g, "/").split("/").includes("skills");
+}
+
+/**
  * Resolve a path to its true location, falling back to the nearest existing
  * ancestor (so writes through symlinked directories are still caught). The
  * missing tail is re-appended; never throws — on total failure returns the

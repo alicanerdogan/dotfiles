@@ -38,8 +38,8 @@ export interface DecidedEvent {
   action: string;
   decision: {
     kind: "allow" | "block";
-    /** menu scope the choice came from; session statements never persist */
-    scope: "session" | "project" | "global";
+    /** menu scope the choice came from; session statements never persist; "call" = one-shot command decision */
+    scope: "session" | "project" | "global" | "call";
     persisted?: boolean;
   };
 }

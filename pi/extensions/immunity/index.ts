@@ -31,6 +31,7 @@ import { loadConfig, type ImmunityConfig, type LoadResult } from "./lib/config.t
 import { handleToolCall, type HandlerEnv, type ScopedRuleViews } from "./lib/handler.ts";
 import { SessionState } from "./lib/session.ts";
 import { defaultAuditPath } from "./lib/audit.ts";
+import { isSkillPath } from "./lib/paths.ts";
 import { writeRule, type RuleKind } from "./lib/rules.ts";
 import { shouldEnforce } from "./lib/gate.ts";
 import type { ToolRequest } from "./lib/pipeline.ts";
@@ -55,6 +56,10 @@ export function toRequest(event: ToolCallEvent, cwd: string): ToolRequest | null
     case "bash":
       return { kind: "bash", command: event.input.command, cwd, home: HOME };
     case "read":
+      // skill reads are never supervised — they resolve outside the cwd in
+      // most projects (the agent dir is a symlink elsewhere) and would
+      // otherwise prompt on every skill load
+      if (isSkillPath(event.input.path, { cwd, home: HOME })) return null;
       return { kind: "file", tool: "read", target: event.input.path, cwd, home: HOME };
     case "write":
       return { kind: "file", tool: "write", target: event.input.path, cwd, home: HOME };

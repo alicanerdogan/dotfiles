@@ -2,7 +2,7 @@ import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { evaluatePath, expandPath, gitCheckIgnore, isOutsideScope, matchesRule, realResolve, scopeDecision } from "./paths.ts";
+import { evaluatePath, expandPath, gitCheckIgnore, isOutsideScope, isSkillPath, matchesRule, realResolve, scopeDecision } from "./paths.ts";
 import type { PathRule } from "./config.ts";
 
 const tmpDirs: string[] = [];
@@ -69,6 +69,26 @@ describe("isOutsideScope / realResolve", () => {
     assert.equal(realResolve(join(dir, "inside", "link", "f.txt")), join(dir, "outside", "f.txt"));
     // missing tail is re-appended
     assert.equal(realResolve(join(dir, "inside", "link", "new.txt")), join(dir, "outside", "new.txt"));
+  });
+});
+
+describe("isSkillPath", () => {
+  const opts = { cwd: "/repo", home: "/home/u" };
+
+  it("true under any directory literally named skills (all discovery roots)", () => {
+    assert.ok(isSkillPath("~/.pi/agent/skills/frontend-design/SKILL.md", opts));
+    assert.ok(isSkillPath("~/.agents/skills/x/SKILL.md", opts));
+    assert.ok(isSkillPath("./.pi/skills/learn-codebase/README.md", opts));
+    assert.ok(isSkillPath("/repo/node_modules/pkg/skills/x/SKILL.md", opts));
+    assert.ok(isSkillPath("/repo/local/skills", opts));
+    assert.ok(isSkillPath("skills/add-mcp-server/SKILL.md", opts)); // relative, resolved against cwd
+  });
+
+  it("false outside skills directories", () => {
+    assert.ok(!isSkillPath("~/.pi/agent/AGENTS.md", opts));
+    assert.ok(!isSkillPath("./src/index.ts", opts));
+    assert.ok(!isSkillPath("/usr/bin/skillset", opts), "segment must be exactly 'skills'");
+    assert.ok(!isSkillPath("/etc/hosts", opts));
   });
 });
 

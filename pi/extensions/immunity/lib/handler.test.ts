@@ -226,15 +226,17 @@ describe("handleToolCall — bash verdicts and silent blocks", () => {
     assert.equal(ui.selectCalls.length, 0);
   });
 
-  it("LLM DENY + blocked (default) → prompt → user blocks with session statement", async () => {
+  it("LLM DENY + blocked (default) → prompt → user denies once; no session state, no rule", async () => {
     const { env, ui, dir } = makeEnv({ llmClient: async () => verdict("high", "DENY") });
-    ui.selects.push("Block for session", "No");
+    ui.selects.push("Deny", "No");
     const r = await handleToolCall(bash("rm -rf x"), env);
     assert.equal(r.allow, false);
-    assert.ok(env.session.isDenied("bash:rm -rf x"));
+    assert.match(r.reason, /Blocked by user/);
+    assert.ok(!env.session.isDenied("bash:rm -rf x"), "one-shot deny leaves no session state");
     const lines = auditLines(dir);
-    const ses = lines.find((l) => l.event === "session");
-    assert.equal(ses?.kind, "sessionDeny");
+    const block = lines.find((l) => l.event === "block");
+    assert.equal(block?.source, "user");
+    assert.equal(block?.userReason, undefined);
   });
 
   it("fallback deny rule (LLM disabled) + asked → silent block; blocked → prompt", async () => {
@@ -251,7 +253,7 @@ describe("handleToolCall — bash verdicts and silent blocks", () => {
       config: { llm: LLM_OFF },
       rules: { commands: { project: [{ action: "deny", exact: true, raw: "git push --force" }] } },
     });
-    ui2.selects.push("Allow for session");
+    ui2.selects.push("Allow");
     const r2 = await handleToolCall(bash("git push --force"), env2);
     assert.deepEqual(r2, { allow: true });
   });
@@ -278,40 +280,43 @@ describe("handleToolCall — bash verdicts and silent blocks", () => {
     assert.match(block?.reason ?? "", /touches protected path/);
   });
 
-  it("DENY with suggestions: all skipped → six-option menu still appears", async () => {
+  it("DENY with suggestions: all skipped → binary command menu", async () => {
     const { env, ui } = makeEnv({
       llmClient: async () => ({
         ok: true,
         verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
       }),
     });
-    ui.selects.push("Skip", "Allow for session");
+    ui.selects.push("Skip", "Allow");
     const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
     assert.deepEqual(r, { allow: true });
     assert.equal(ui.selectCalls.length, 2, "suggestion dialog + command menu");
-    assert.ok(env.session.isAllowed("bash:find ~/repos -maxdepth 1 -type d | wc -l"));
+    assert.deepEqual(ui.selectCalls[1].options, ["Allow", "Deny"], "whole-command menu is binary");
   });
 
-  it("DENY with suggestions: allow path for session, then allow the command", async () => {
+  it("DENY with suggestions: allow path for session, then allow the command once", async () => {
     const { env, ui, dir } = makeEnv({
       llmClient: async () => ({
         ok: true,
         verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
       }),
     });
-    ui.selects.push("Allow for session", "Allow for session");
+    ui.selects.push("Allow for session", "Allow");
     const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
     assert.deepEqual(r, { allow: true });
     assert.ok(env.session.isAllowed("file:/Users/alican/repos"));
-    assert.ok(env.session.isAllowed("bash:find ~/repos -maxdepth 1 -type d | wc -l"));
+    assert.ok(!env.session.isAllowed("bash:find ~/repos -maxdepth 1 -type d | wc -l"), "command is not memorized");
     const ses = auditLines(dir).filter((l) => l.event === "session");
-    assert.equal(ses.length, 2, "path statement + command statement");
+    assert.equal(ses.length, 1, "only the path statement — the command was a one-shot allow");
+    const decision = auditLines(dir).find((l) => l.event === "decision");
+    assert.equal(decision?.kind, "allow");
+    assert.equal(decision?.scope, "call");
   });
 
   it("inconclusive LLM + no rules + strict (default) → prompt; strict:false → allow", async () => {
     const inconclusive = { ok: false as const, kind: "timeout" as const, error: "no verdict" };
     const { env, ui } = makeEnv({ llmClient: async () => inconclusive });
-    ui.selects.push("Allow for session");
+    ui.selects.push("Allow");
     const r = await handleToolCall(bash("ls -la"), env);
     assert.deepEqual(r, { allow: true });
 
@@ -321,17 +326,16 @@ describe("handleToolCall — bash verdicts and silent blocks", () => {
     assert.equal(ui2.selectCalls.length, 0);
   });
 
-  it("Block for project on a command writes an exact deny rule", async () => {
-    const { env, ui, dir } = makeEnv({
+  it("command ask rule (LLM off) — Deny blocks one-shot, no rule written", async () => {
+    const { env, ui } = makeEnv({
       config: { llm: LLM_OFF },
       rules: { commands: { project: [{ action: "ask", exact: false, raw: "npm install" }] } },
     });
-    ui.selects.push("Block for project", "No");
+    ui.selects.push("Deny", "No");
     const r = await handleToolCall(bash("npm install lodash"), env);
     assert.equal(r.allow, false);
-    const raw = JSON.parse(readFileSync(join(dir, "project-immunity.json"), "utf8"));
-    assert.deepEqual(raw.commands.rules, [{ action: "deny", exact: true, raw: "npm install lodash" }]);
-    assert.deepEqual(env.rules.commands.project.map((x) => x.raw), ["npm install", "npm install lodash"]);
+    assert.match(r.reason, /Blocked by user/);
+    assert.deepEqual(env.rules.commands.project.map((x) => x.raw), ["npm install"], "no commandDeny rule added");
   });
 });
 

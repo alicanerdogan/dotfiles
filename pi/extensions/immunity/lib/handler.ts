@@ -8,14 +8,16 @@
  *   pipeline → allow: return
  *           → block:  audit + blocked event + block (silent — session
  *                     statements and promptWhen='asked' denies)
- *           → prompt: prompt:opened event, hooks.afterPrompt, six-option
- *                     menu, prompt:closed in finally; allow → decided event,
- *                     block → audit + blocked event + block
+ *           → prompt: prompt:opened event, hooks.afterPrompt, suggestion
+ *                     step (bash) + decision menu, prompt:closed in
+ *                     finally; allow → decided event, block → audit +
+ *                     blocked event + block
  *
- * Menu outcomes: session choices land in the in-memory SessionState
- * (final for the session); project/global choices write rules via
- * writeRule + reflect into the in-memory merged config and the scoped
- * rule views (effective immediately).
+ * Decision menus: whole commands are a plain Allow/Deny (one-shot, no rules);
+ * file paths use the six-option scope menu. Session choices land in the
+ * in-memory SessionState (final for the session); project/global choices
+ * write rules via writeRule + reflect into the in-memory merged config and
+ * the scoped rule views (effective immediately).
  */
 import { runPipeline, grantKey, type Suggestions, type ToolRequest } from "./pipeline.ts";
 import type { SessionState } from "./session.ts";
@@ -23,7 +25,7 @@ import type { CommandRule, ImmunityConfig, PathRule } from "./config.ts";
 import { expandPath } from "./paths.ts";
 import type { Bus } from "./bus.ts";
 import { emitBlocked, emitDecided, emitPromptClosed, emitPromptOpened, newPromptId } from "./bus.ts";
-import { runPromptFlow, runSuggestionStep, type PromptResult, type PromptUi, type SuggestionChoice } from "./prompt.ts";
+import { runPromptFlow, runSuggestionStep, runCommandPrompt, type PromptResult, type PromptUi, type SuggestionChoice } from "./prompt.ts";
 import { appendAudit, blockMessage, type BlockSource } from "./audit.ts";
 import { writeRule, type RuleKind } from "./rules.ts";
 import { runPromptCommand } from "./notify.ts";
@@ -227,17 +229,44 @@ async function runMenu(
       }
     }
 
-    /* Step 2 — the six-option command menu. */
-    const path = req.kind === "file" ? toHomePath(resolved(req), env.home) : undefined;
+    /* Step 2 — the decision. Whole commands are a plain Allow/Deny (scope
+     * choices make sense only for the suggestion step's flagged subsections);
+     * file paths keep the six-option scope menu — a path is a durable rule
+     * target. */
+    if (req.kind === "bash") {
+      const result = await runCommandPrompt({ ui: env.ui, reason });
+      if (result.action === "allow") {
+        if (env.auditFile) {
+          appendAudit(
+            {
+              event: "decision",
+              ts: new Date().toISOString(),
+              sessionId: env.sessionId,
+              tool,
+              action,
+              kind: "allow",
+              scope: "call",
+              reason,
+            },
+            env.auditFile,
+          );
+        }
+        emitDecided(env.bus, { feature, action, decision: { kind: "allow", scope: "call" } });
+        return { allow: true };
+      }
+      // user denied the command — one-shot; no rule, no session statement
+      return blockCall(req, env, feature, action, tool, reason, result.userReason);
+    }
+
+    const path = toHomePath(resolved(req), env.home);
     const result = await runPromptFlow({
       ui: env.ui,
       reason,
       sessionKey: grantKey(req),
       session: env.session,
       saveRule: saveRuleImpl,
-      command: req.kind === "bash" ? req.command : undefined,
       path,
-      pathKind: path ? env.pathKindFor?.(path) ?? "file" : undefined,
+      pathKind: env.pathKindFor?.(path) ?? "file",
     });
 
     // audit the choice + emit the decided event
@@ -258,7 +287,6 @@ async function runMenu(
           env.auditFile,
         );
       } else {
-        const kind: RuleKind = result.action === "allow" ? (req.kind === "bash" ? "commandAllow" : "pathAllow") : req.kind === "bash" ? "commandDeny" : "pathDeny";
         appendAudit(
           {
             event: "rule",
@@ -266,8 +294,8 @@ async function runMenu(
             sessionId: env.sessionId,
             tool,
             action,
-            kind,
-            value: req.kind === "bash" ? req.command : result.pathValue ?? path ?? req.target,
+            kind: result.action === "allow" ? "pathAllow" : "pathDeny",
+            value: result.pathValue ?? path ?? req.target,
             scope: result.scope,
             source: "menu",
             persisted: result.persisted ?? false,

@@ -1,6 +1,6 @@
 /**
- * Unified six-option menu (design updates doc) — every blocked command and
- * file path prompts with the same shape:
+ * Decision menus (design updates doc). File paths prompt with the six-option
+ * scope menu:
  *
  *   Allow for session / Allow for project / Allow globally
  *   Block for session / Block for project / Block globally
@@ -11,6 +11,10 @@
  * After a Block* choice the user is asked whether they want to provide a
  * reason (built-in, not configurable); a user-provided reason overwrites the
  * model's reason.
+ *
+ * Whole commands prompt with a plain Allow/Deny (`runCommandPrompt`) — scope
+ * choices make sense only for the suggestion step's flagged subsections, not
+ * for a one-shot command.
  *
  * Dismissed prompts (undefined) and UI failures deny — nothing gets through
  * a broken prompt (safety-first).
@@ -145,6 +149,34 @@ export async function runPromptFlow(opts: PromptFlowOptions): Promise<PromptResu
   opts.session.addDeny(sessionKey, pathKind ?? "file");
   const userReason = await askReason(opts.ui);
   return { action: "block", scope: "session", userReason, pathKind, pathValue };
+}
+
+/* ------------------------------------------------------------------ */
+/* Command decision — plain Allow/Deny                                  */
+/* ------------------------------------------------------------------ */
+
+/** A whole command is never scope-persisted: accepting or rejecting one is
+ * a one-shot call decision. Scope choices (session/project/global) are
+ * reserved for the suggestion step's flagged subsections. */
+export const COMMAND_OPTIONS = ["Allow", "Deny"] as const;
+
+export interface CommandPromptResult {
+  action: "allow" | "block";
+  /** present exactly when the user typed one after Deny */
+  userReason?: string;
+}
+
+export async function runCommandPrompt(opts: { ui: PromptUi; reason: string }): Promise<CommandPromptResult> {
+  let choice: string | undefined;
+  try {
+    choice = await opts.ui.select(`Immunity: ${oneLine(opts.reason)}`, [...COMMAND_OPTIONS]);
+  } catch {
+    return { action: "block" }; // broken prompt must not let the call through
+  }
+  if (choice === undefined) return { action: "block" }; // dismissed → block (safety-first)
+  if (choice === "Allow") return { action: "allow" };
+  const userReason = await askReason(opts.ui);
+  return { action: "block", userReason };
 }
 
 async function askReason(ui: PromptUi): Promise<string | undefined> {

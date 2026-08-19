@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MENU_OPTIONS, oneLine, runPromptFlow, runSuggestionStep, type PromptFlowOptions, type SuggestionStepOptions } from "./prompt.ts";
+import { MENU_OPTIONS, oneLine, runCommandPrompt, runPromptFlow, runSuggestionStep, type PromptFlowOptions, type SuggestionStepOptions } from "./prompt.ts";
 import { SessionState } from "./session.ts";
 import { FakeUi } from "./testing.ts";
 import type { RuleKind } from "./rules.ts";
@@ -36,6 +36,53 @@ describe("oneLine", () => {
 
   it("leaves short reasons untouched", () => {
     assert.equal(oneLine("path denied by rule: ~/.ssh (global)"), "path denied by rule: ~/.ssh (global)");
+  });
+});
+
+describe("runCommandPrompt — binary Allow/Deny", () => {
+  const reason = "LLM: high risk — rm -rf /data";
+
+  it("offers exactly Allow and Deny with a one-line title", async () => {
+    const ui = new FakeUi();
+    ui.selects.push(undefined);
+    await runCommandPrompt({ ui, reason });
+    assert.deepEqual(ui.selectCalls[0].options, ["Allow", "Deny"]);
+    assert.equal(ui.selectCalls[0].title, `Immunity: ${reason}`);
+  });
+
+  it("Allow → one-shot allow, nothing persisted, no session statement", async () => {
+    const ui = new FakeUi();
+    ui.selects.push("Allow");
+    const r = await runCommandPrompt({ ui, reason });
+    assert.deepEqual(r, { action: "allow" });
+    assert.equal(ui.selectCalls.length, 1);
+  });
+
+  it("Deny → block; reason ask (No → no reason)", async () => {
+    const ui = new FakeUi();
+    ui.selects.push("Deny", "No");
+    const r = await runCommandPrompt({ ui, reason });
+    assert.deepEqual(r, { action: "block", userReason: undefined });
+  });
+
+  it("Deny + Yes → user reason recorded", async () => {
+    const ui = new FakeUi();
+    ui.selects.push("Deny", "Yes");
+    ui.inputs.push("never run this");
+    const r = await runCommandPrompt({ ui, reason });
+    assert.deepEqual(r, { action: "block", userReason: "never run this" });
+  });
+
+  it("dismissed prompt → block (safety-first)", async () => {
+    const ui = new FakeUi();
+    ui.selects.push(undefined);
+    assert.deepEqual(await runCommandPrompt({ ui, reason }), { action: "block" });
+  });
+
+  it("UI failure → block, nothing leaks through", async () => {
+    const ui = new FakeUi();
+    ui.failNext("select");
+    assert.deepEqual(await runCommandPrompt({ ui, reason }), { action: "block" });
   });
 });
 

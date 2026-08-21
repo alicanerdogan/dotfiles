@@ -157,24 +157,27 @@ export async function runPromptFlow(opts: PromptFlowOptions): Promise<PromptResu
 
 /** A whole command is never scope-persisted: accepting or rejecting one is
  * a one-shot call decision. Scope choices (session/project/global) are
- * reserved for the suggestion step's flagged subsections. */
+ * reserved for the suggestion step's flagged subsections. When the analyzer
+ * produced no response, the menu adds a manual *Retry analysis* option. */
 export const COMMAND_OPTIONS = ["Allow", "Deny"] as const;
+export const RETRY_ANALYSIS = "Retry analysis" as const;
 
-export interface CommandPromptResult {
-  action: "allow" | "block";
-  /** present exactly when the user typed one after Deny */
-  userReason?: string;
-}
+export type CommandPromptResult =
+  | { action: "allow" }
+  | { action: "block"; userReason?: string }
+  | { action: "retry" };
 
-export async function runCommandPrompt(opts: { ui: PromptUi; reason: string }): Promise<CommandPromptResult> {
+export async function runCommandPrompt(opts: { ui: PromptUi; reason: string; retryable?: boolean }): Promise<CommandPromptResult> {
   let choice: string | undefined;
   try {
-    choice = await opts.ui.select(`Immunity: ${oneLine(opts.reason)}`, [...COMMAND_OPTIONS]);
+    const options = opts.retryable ? [...COMMAND_OPTIONS, RETRY_ANALYSIS] : [...COMMAND_OPTIONS];
+    choice = await opts.ui.select(`Immunity: ${oneLine(opts.reason)}`, options);
   } catch {
     return { action: "block" }; // broken prompt must not let the call through
   }
   if (choice === undefined) return { action: "block" }; // dismissed → block (safety-first)
   if (choice === "Allow") return { action: "allow" };
+  if (choice === RETRY_ANALYSIS) return { action: "retry" };
   const userReason = await askReason(opts.ui);
   return { action: "block", userReason };
 }
@@ -195,9 +198,10 @@ async function askReason(ui: PromptUi): Promise<string | undefined> {
 }
 
 /* ------------------------------------------------------------------ */
-/* Suggestion step — the model's flagged paths, resolved BEFORE the     */
-/* command menu. Protecting a path answers the command question: the    */
-/* command that touches it is blocked without asking.                   */
+/* Suggestion step — the analyzer's flagged paths, resolved AFTER the   */
+/* command was allowed. Choices persist path rules for future commands: */
+/* allowing writes a pathAllow, protecting writes a pathDeny. The       */
+/* already-allowed command is never blocked by this step.               */
 /* ------------------------------------------------------------------ */
 
 export type SuggestionChoice =
@@ -220,11 +224,11 @@ export interface SuggestionStepOptions {
 export interface SuggestionStepResult {
   /** one choice per flagged path (skip included), in order */
   choices: SuggestionChoice[];
-  /** a path was protected → the command is blocked, no command menu */
+  /** a path was protected → the loop stops (remaining paths stay unanswered) */
   protected: boolean;
   /** the protected path (reason text) */
   protectedPath?: string;
-  /** the prompt failed → block the command (safety-first) */
+  /** the prompt failed → the caller decides; it never blocks an allowed command */
   failed: boolean;
 }
 

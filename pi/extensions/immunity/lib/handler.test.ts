@@ -258,50 +258,63 @@ describe("handleToolCall — bash verdicts and silent blocks", () => {
     assert.deepEqual(r2, { allow: true });
   });
 
-  it("DENY with suggestions: protect → command blocked, rule written, no command menu", async () => {
+  it("DENY with suggestions: command allowed first, then Protect persists a deny rule without blocking", async () => {
     const { env, ui, dir } = makeEnv({
       llmClient: async () => ({
         ok: true,
         verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
       }),
     });
-    ui.selects.push("Protect for project");
+    ui.selects.push("Allow", "Protect for project");
     const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
-    assert.equal(r.allow, false);
-    assert.match(r.reason, /command touches protected path \/Users\/alican\/repos/);
+    assert.deepEqual(r, { allow: true }, "protect never blocks an already-allowed command");
     const raw = JSON.parse(readFileSync(join(dir, "project-immunity.json"), "utf8"));
     assert.deepEqual(raw.paths.rules, [{ action: "deny", kind: "file", path: "/Users/alican/repos" }]);
-    assert.equal(ui.selectCalls.length, 1, "suggestion dialog only — no command menu");
+    assert.equal(ui.selectCalls.length, 2, "command decision first, then the suggestion dialog");
+    assert.deepEqual(ui.selectCalls[0].options, ["Allow", "Deny"]);
     const lines = auditLines(dir);
     const rule = lines.find((l) => l.event === "rule");
     assert.equal(rule?.kind, "pathDeny");
     assert.equal(rule?.source, "suggestion");
-    const block = lines.find((l) => l.event === "block");
-    assert.match(block?.reason ?? "", /touches protected path/);
+    const decision = lines.find((l) => l.event === "decision");
+    assert.equal(decision?.kind, "allow");
   });
 
-  it("DENY with suggestions: all skipped → binary command menu", async () => {
+  it("DENY with suggestions: denying the command skips the suggestions", async () => {
     const { env, ui } = makeEnv({
       llmClient: async () => ({
         ok: true,
         verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
       }),
     });
-    ui.selects.push("Skip", "Allow");
+    ui.selects.push("Deny", "No");
     const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
-    assert.deepEqual(r, { allow: true });
-    assert.equal(ui.selectCalls.length, 2, "suggestion dialog + command menu");
-    assert.deepEqual(ui.selectCalls[1].options, ["Allow", "Deny"], "whole-command menu is binary");
+    assert.equal(r.allow, false);
+    assert.ok(!ui.selectCalls.some((c) => c.title.includes("analyzer flagged")), "no suggestion dialogs after a Deny");
   });
 
-  it("DENY with suggestions: allow path for session, then allow the command once", async () => {
+  it("DENY with suggestions: allow the command, then skip the suggestions", async () => {
+    const { env, ui } = makeEnv({
+      llmClient: async () => ({
+        ok: true,
+        verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
+      }),
+    });
+    ui.selects.push("Allow", "Skip");
+    const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
+    assert.deepEqual(r, { allow: true });
+    assert.equal(ui.selectCalls.length, 2, "command decision first, suggestion dialog second");
+    assert.deepEqual(ui.selectCalls[0].options, ["Allow", "Deny"], "whole-command menu is binary");
+  });
+
+  it("DENY with suggestions: allow the command, then allow a flagged path for the session", async () => {
     const { env, ui, dir } = makeEnv({
       llmClient: async () => ({
         ok: true,
         verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
       }),
     });
-    ui.selects.push("Allow for session", "Allow");
+    ui.selects.push("Allow", "Allow for session");
     const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
     assert.deepEqual(r, { allow: true });
     assert.ok(env.session.isAllowed("file:/Users/alican/repos"));
@@ -336,6 +349,71 @@ describe("handleToolCall — bash verdicts and silent blocks", () => {
     assert.equal(r.allow, false);
     assert.match(r.reason, /Blocked by user/);
     assert.deepEqual(env.rules.commands.project.map((x) => x.raw), ["npm install"], "no commandDeny rule added");
+  });
+});
+
+describe("handleToolCall — manual analysis retry", () => {
+  const inconclusive: VerdictResult = { ok: false, kind: "timeout", error: "no verdict within 30000ms" };
+
+  it("failed analysis → prompt offers Retry analysis; retry re-runs the analyzer", async () => {
+    let calls = 0;
+    const { env, ui } = makeEnv({
+      llmClient: async () => (++calls === 1 ? inconclusive : verdict("none", "ALLOWED")),
+    });
+    ui.selects.push("Retry analysis");
+    const r = await handleToolCall(bash("ls -la"), env);
+    assert.deepEqual(r, { allow: true });
+    assert.equal(calls, 2, "retry re-ran the analysis");
+    assert.deepEqual(ui.selectCalls[0].options, ["Allow", "Deny", "Retry analysis"]);
+  });
+
+  it("a retried analysis that still fails prompts again with the option (uncapped, user-driven)", async () => {
+    let calls = 0;
+    const { env, ui } = makeEnv({ llmClient: async () => (++calls === 3 ? verdict("none", "ALLOWED") : inconclusive) });
+    ui.selects.push("Retry analysis", "Retry analysis");
+    const r = await handleToolCall(bash("ls -la"), env);
+    assert.deepEqual(r, { allow: true });
+    assert.equal(calls, 3);
+    assert.equal(ui.selectCalls.length, 2, "one prompt per failed attempt");
+  });
+
+  it("deny after a failed analysis blocks without further attempts", async () => {
+    let calls = 0;
+    const { env, ui } = makeEnv({ llmClient: async () => (calls++, inconclusive) });
+    ui.selects.push("Deny", "No");
+    const r = await handleToolCall(bash("ls -la"), env);
+    assert.equal(r.allow, false);
+    assert.equal(calls, 1);
+  });
+
+  it("no Retry analysis option when the model responded (DENY verdict)", async () => {
+    const { env, ui } = makeEnv({ llmClient: async () => verdict("high", "DENY") });
+    ui.selects.push("Allow");
+    const r = await handleToolCall(bash("rm -rf x"), env);
+    assert.deepEqual(r, { allow: true });
+    assert.deepEqual(ui.selectCalls[0].options, ["Allow", "Deny"]);
+  });
+
+  it("no Retry analysis option when the LLM is disabled (deterministic prompt)", async () => {
+    const { env, ui } = makeEnv({ config: { llm: LLM_OFF } });
+    ui.selects.push("Allow");
+    await handleToolCall(bash("ls -la"), env);
+    assert.deepEqual(ui.selectCalls[0].options, ["Allow", "Deny"]);
+    assert.ok(ui.selectCalls[0].title.includes("no LLM analysis available"), "reason notes the analysis absence");
+  });
+
+  it("every analysis attempt is audited (verdict trail) and the failed-kind reason surfaces", async () => {
+    let calls = 0;
+    const { env, ui, dir } = makeEnv({
+      llmClient: async () => (++calls === 2 ? verdict("none", "ALLOWED") : inconclusive),
+    });
+    ui.selects.push("Retry analysis");
+    await handleToolCall(bash("ls -la"), env);
+    assert.ok(ui.selectCalls[0].title.includes("timeout"), "first prompt explains the failure kind");
+    const verdicts = auditLines(dir).filter((l) => l.event === "verdict");
+    assert.equal(verdicts.length, 2, "one verdict-trail line per attempt");
+    assert.equal(verdicts[0].failure, "timeout: no verdict within 30000ms");
+    assert.equal(verdicts[1].outcome, "ALLOWED");
   });
 });
 

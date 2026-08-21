@@ -73,6 +73,14 @@ describe("runCommandPrompt — binary Allow/Deny", () => {
     assert.deepEqual(r, { action: "block", userReason: "never run this" });
   });
 
+  it("Adds Retry analysis when the analysis failed, and returns retry", async () => {
+    const ui = new FakeUi();
+    ui.selects.push("Retry analysis");
+    const r = await runCommandPrompt({ ui, reason, retryable: true });
+    assert.deepEqual(r, { action: "retry" });
+    assert.deepEqual(ui.selectCalls[0].options, ["Allow", "Deny", "Retry analysis"]);
+  });
+
   it("dismissed prompt → block (safety-first)", async () => {
     const ui = new FakeUi();
     ui.selects.push(undefined);
@@ -149,7 +157,7 @@ describe("runSuggestionStep", () => {
     assert.deepEqual(saved, [{ kind: "pathAllow", value: "/a", scope: "project", pathKind: "file" }]);
   });
 
-  it("Protect writes a pathDeny rule, blocks the command, and stops the loop", async () => {
+  it("Protect writes a pathDeny rule and stops the loop (command already decided by the caller)", async () => {
     const { opts, ui, saved } = flow({ suggestions: sug(["/a", "/b"]) });
     ui.selects.push("Protect for global");
     const r = await runSuggestionStep(opts);

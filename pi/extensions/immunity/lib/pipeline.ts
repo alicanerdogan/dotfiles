@@ -77,7 +77,7 @@ export interface Suggestions {
 
 export type Outcome =
   | { outcome: "allow"; reason: string }
-  | { outcome: "prompt"; reason: string; source: PromptSource; suggestions?: Suggestions }
+  | { outcome: "prompt"; reason: string; source: PromptSource; suggestions?: Suggestions; llmFailed?: boolean }
   | { outcome: "block"; reason: string; source: BlockSource };
 
 export interface PipelineResult {
@@ -197,6 +197,7 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions): Prom
 
   /* 3. Commands — LLM when enabled, else deterministic fallback. */
   let llmStage: LlmStage | undefined;
+  let llmFailed = false;
   if (!opts.llm.disabled) {
     const client = opts.llmClient ?? requestVerdict;
     const result = await client(req.command, {
@@ -211,6 +212,7 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions): Prom
     });
     llmStage = { stage: "llm", result, verdict: result.ok ? result.verdict : undefined };
     stages.push(llmStage);
+    if (!result.ok) llmFailed = true; // no response — the prompt may offer a manual re-run
 
     if (result.ok) {
       const { verdict } = result;
@@ -242,9 +244,10 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions): Prom
     // inconclusive — fall through to the deterministic fallback
   }
 
-  /* 4. Deterministic fallback (LLM disabled, unavailable, or inconclusive). */
+  // deterministic fallback (LLM disabled, unavailable, or inconclusive)
   const { decision } = fallbackDecision(opts.commands.project, opts.commands.global, req.command);
   stages.push({ stage: "rules", decision });
+  const failedKind = () => (llmStage && !llmStage.result.ok ? ` (${llmStage.result.kind})` : "");
   if (decision) {
     const reason = commandReason(decision.rule);
     if (decision.action === "allow") {
@@ -254,14 +257,19 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions): Prom
       if (opts.promptWhen === "asked") {
         return { outcome: { outcome: "block", reason, source: "policy" }, stages };
       }
-      return { outcome: { outcome: "prompt", reason, source: "policy" }, stages };
+      return { outcome: { outcome: "prompt", reason, source: "policy", llmFailed }, stages };
     }
-    return { outcome: { outcome: "prompt", reason, source: "policy" }, stages };
+    return { outcome: { outcome: "prompt", reason, source: "policy", llmFailed }, stages };
   }
 
   if (opts.strict) {
     return {
-      outcome: { outcome: "prompt", reason: "no rule matched; no LLM analysis available", source: "default" },
+      outcome: {
+        outcome: "prompt",
+        reason: `no rule matched; no LLM analysis available${failedKind()}`,
+        source: "default",
+        llmFailed,
+      },
       stages,
     };
   }

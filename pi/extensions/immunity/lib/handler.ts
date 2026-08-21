@@ -8,16 +8,23 @@
  *   pipeline → allow: return
  *           → block:  audit + blocked event + block (silent — session
  *                     statements and promptWhen='asked' denies)
- *           → prompt: prompt:opened event, hooks.afterPrompt, suggestion
- *                     step (bash) + decision menu, prompt:closed in
- *                     finally; allow → decided event, block → audit +
- *                     blocked event + block
+ *           → prompt: prompt:opened event, hooks.afterPrompt, decision
+ *                     menu — the command first, then the suggestion step
+ *                     for the analyzer's flagged paths (only after an
+ *                     Allow), prompt:closed in finally; allow → decided
+ *                     event, block → audit + blocked event + block. A
+ *                     failed analysis adds a manual *Retry analysis*
+ *                     option that loops the whole pipeline (fresh verdict
+ *                     trail per attempt; uncapped, user-driven).
  *
- * Decision menus: whole commands are a plain Allow/Deny (one-shot, no rules);
- * file paths use the six-option scope menu. Session choices land in the
- * in-memory SessionState (final for the session); project/global choices
- * write rules via writeRule + reflect into the in-memory merged config and
- * the scoped rule views (effective immediately).
+ * Decision menus: whole commands are a plain Allow/Deny (one-shot, no
+ * rules); file paths use the six-option scope menu. Suggestions are asked
+ * only when execution is allowed — a Deny skips them; a Protect persists a
+ * deny rule for future commands without blocking the allowed one. Session
+ * choices land in the in-memory SessionState (final for the session);
+ * project/global choices write rules via writeRule + reflect into the
+ * in-memory merged config and the scoped rule views (effective
+ * immediately).
  */
 import { runPipeline, grantKey, type Suggestions, type ToolRequest } from "./pipeline.ts";
 import type { SessionState } from "./session.ts";
@@ -102,79 +109,86 @@ export async function handleToolCall(req: ToolRequest, env: HandlerEnv): Promise
   const { config } = env;
   const status = env.setStatus;
   try {
-    if (status && !config.llm.disabled) status("immunity: analyzing…");
-    const r = await runPipeline(req, {
-      strict: config.strict,
-      paths: env.rules.paths,
-      commands: env.rules.commands,
-      promptWhen: config.commands.promptWhen,
-      llm: config.llm,
-      session: env.session,
-      gitIgnoreCheck: env.gitIgnoreCheck,
-      llmClient: env.llmClient,
-      signal: env.signal,
-    });
-    const { outcome, stages } = r;
-
-    // verdict trail: one line per LLM analysis, so "why did this pass?"
-    // is answerable from the audit log (ALLOWED, DENY, ASK_USER, or failure)
-    if (env.auditFile) {
-      const llmStage = stages.find((s): s is { stage: "llm"; result: VerdictResult } => s.stage === "llm");
-      if (llmStage) {
-        const res = llmStage.result;
-        appendAudit(
-          {
-            event: "verdict",
-            ts: new Date().toISOString(),
-            sessionId: env.sessionId,
-            tool: toolOf(req),
-            action: actionOf(req),
-            risk: res.ok ? res.verdict.risk : null,
-            outcome: res.ok ? res.verdict.outcome : null,
-            reason: res.ok ? res.verdict.reason : undefined,
-            suggestedPaths: res.ok ? res.verdict.paths?.blocked : undefined,
-            suggestedCommands: res.ok ? res.verdict.commands?.blocked : undefined,
-            failure: res.ok ? undefined : `${res.kind}: ${res.error}`,
-            llm: {
-              provider: config.llm.provider || undefined,
-              model: config.llm.model || undefined,
-            },
-          },
-          env.auditFile,
-        );
-      }
-    }
-
-    if (outcome.outcome === "allow") return { allow: true };
-
-    if (outcome.outcome === "block") {
-      const source: BlockSource = outcome.source;
-      if (env.auditFile) {
-        appendAudit(
-          {
-            event: "block",
-            ts: new Date().toISOString(),
-            sessionId: env.sessionId,
-            tool: toolOf(req),
-            action: actionOf(req),
-            reason: outcome.reason,
-            source,
-          },
-          env.auditFile,
-        );
-      }
-      emitBlocked(env.bus, {
-        feature: featureOf(req),
-        action: actionOf(req),
-        reason: outcome.reason,
-        block: { source },
-        context: { sessionId: env.sessionId },
+    // Each analysis attempt runs the pipeline once; a "Retry analysis"
+    // choice loops back here for a fresh attempt (user-driven, uncapped).
+    for (;;) {
+      if (status && !config.llm.disabled) status("immunity: analyzing…");
+      const r = await runPipeline(req, {
+        strict: config.strict,
+        paths: env.rules.paths,
+        commands: env.rules.commands,
+        promptWhen: config.commands.promptWhen,
+        llm: config.llm,
+        session: env.session,
+        gitIgnoreCheck: env.gitIgnoreCheck,
+        llmClient: env.llmClient,
+        signal: env.signal,
       });
-      return { allow: false, reason: blockMessage(source, outcome.reason) };
-    }
+      const { outcome, stages } = r;
 
-    // prompt — the suggestion step (flagged paths), then the six-option menu
-    return runMenu(req, env, outcome.reason, outcome.source, outcome.suggestions);
+      // verdict trail: one line per LLM analysis attempt, so "why did this
+      // pass?" is answerable from the audit log (ALLOWED, DENY, ASK_USER,
+      // or failure — retries included)
+      if (env.auditFile) {
+        const llmStage = stages.find((s): s is { stage: "llm"; result: VerdictResult } => s.stage === "llm");
+        if (llmStage) {
+          const res = llmStage.result;
+          appendAudit(
+            {
+              event: "verdict",
+              ts: new Date().toISOString(),
+              sessionId: env.sessionId,
+              tool: toolOf(req),
+              action: actionOf(req),
+              risk: res.ok ? res.verdict.risk : null,
+              outcome: res.ok ? res.verdict.outcome : null,
+              reason: res.ok ? res.verdict.reason : undefined,
+              suggestedPaths: res.ok ? res.verdict.paths?.blocked : undefined,
+              suggestedCommands: res.ok ? res.verdict.commands?.blocked : undefined,
+              failure: res.ok ? undefined : `${res.kind}: ${res.error}`,
+              llm: {
+                provider: config.llm.provider || undefined,
+                model: config.llm.model || undefined,
+              },
+            },
+            env.auditFile,
+          );
+        }
+      }
+
+      if (outcome.outcome === "allow") return { allow: true };
+
+      if (outcome.outcome === "block") {
+        const source: BlockSource = outcome.source;
+        if (env.auditFile) {
+          appendAudit(
+            {
+              event: "block",
+              ts: new Date().toISOString(),
+              sessionId: env.sessionId,
+              tool: toolOf(req),
+              action: actionOf(req),
+              reason: outcome.reason,
+              source,
+            },
+            env.auditFile,
+          );
+        }
+        emitBlocked(env.bus, {
+          feature: featureOf(req),
+          action: actionOf(req),
+          reason: outcome.reason,
+          block: { source },
+          context: { sessionId: env.sessionId },
+        });
+        return { allow: false, reason: blockMessage(source, outcome.reason) };
+      }
+
+      // prompt — the command decision, then the flagged-path suggestions;
+      // "Retry analysis" (failed analysis only) loops back to re-run it
+      const menu = await runMenu(req, env, outcome.reason, outcome.suggestions, outcome.llmFailed);
+      if (menu !== "retry") return menu;
+    }
   } finally {
     if (status) status(null);
   }
@@ -184,9 +198,10 @@ async function runMenu(
   req: ToolRequest,
   env: HandlerEnv,
   reason: string,
-  source: "policy" | "llm" | "default",
   suggestions?: Suggestions,
-): Promise<HandlerResult> {
+  /** the analysis failed → the command menu adds a manual *Retry analysis* option */
+  llmFailed?: boolean,
+): Promise<HandlerResult | "retry"> {
   const promptId = newPromptId();
   const feature = featureOf(req);
   emitPromptOpened(env.bus, { prompt: { id: promptId, feature, reason } });
@@ -209,55 +224,56 @@ async function runMenu(
     const action = actionOf(req);
     const tool = toolOf(req);
 
-    /* Step 1 — the analyzer's flagged paths (bash only). Protecting a path
-     * answers the command question: the command that touches it is blocked. */
-    if (suggestions && req.kind === "bash") {
-      const sug = await runSuggestionStep({
-        ui: env.ui,
-        reason,
-        suggestions,
-        session: env.session,
-        saveRule: saveRuleImpl,
-        pathKindFor: env.pathKindFor,
-      });
-      for (const choice of sug.choices) auditSuggestionChoice(req, env, choice);
-      if (sug.failed) {
-        return blockCall(req, env, feature, action, tool, "immunity prompt failed — command not run");
-      }
-      if (sug.protected) {
-        return blockCall(req, env, feature, action, tool, `command touches protected path ${sug.protectedPath}`);
-      }
-    }
-
-    /* Step 2 — the decision. Whole commands are a plain Allow/Deny (scope
-     * choices make sense only for the suggestion step's flagged subsections);
-     * file paths keep the six-option scope menu — a path is a durable rule
-     * target. */
+    /* Step 1 — the command decision. Whole commands are a plain Allow/Deny
+     * (scope choices make sense only for flagged subsections); file paths
+     * keep the six-option scope menu — a path is a durable rule target.
+     * Denying the command ends here: flagged-path suggestions are only
+     * asked once execution is allowed. When the analysis failed, a manual
+     * *Retry analysis* option loops back to re-run it. */
     if (req.kind === "bash") {
-      const result = await runCommandPrompt({ ui: env.ui, reason });
-      if (result.action === "allow") {
-        if (env.auditFile) {
-          appendAudit(
-            {
-              event: "decision",
-              ts: new Date().toISOString(),
-              sessionId: env.sessionId,
-              tool,
-              action,
-              kind: "allow",
-              scope: "call",
-              reason,
-            },
-            env.auditFile,
-          );
-        }
-        emitDecided(env.bus, { feature, action, decision: { kind: "allow", scope: "call" } });
-        return { allow: true };
+      const result = await runCommandPrompt({ ui: env.ui, reason, retryable: llmFailed });
+      if (result.action === "retry") return "retry";
+      if (result.action === "block") {
+        // user denied the command — one-shot; no rule, no session statement
+        return blockCall(req, env, feature, action, tool, reason, result.userReason);
       }
-      // user denied the command — one-shot; no rule, no session statement
-      return blockCall(req, env, feature, action, tool, reason, result.userReason);
+      if (env.auditFile) {
+        appendAudit(
+          {
+            event: "decision",
+            ts: new Date().toISOString(),
+            sessionId: env.sessionId,
+            tool,
+            action,
+            kind: "allow",
+            scope: "call",
+            reason,
+          },
+          env.auditFile,
+        );
+      }
+      emitDecided(env.bus, { feature, action, decision: { kind: "allow", scope: "call" } });
+
+      /* Step 2 — execution allowed (bash): settle the analyzer's flagged
+       * paths into durable rules for future commands. Protecting a path
+       * writes a deny rule but does not block — the command was already
+       * allowed. A failed/dismissed suggestion prompt never undoes the
+       * explicit Allow. */
+      if (suggestions) {
+        const sug = await runSuggestionStep({
+          ui: env.ui,
+          reason,
+          suggestions,
+          session: env.session,
+          saveRule: saveRuleImpl,
+          pathKindFor: env.pathKindFor,
+        });
+        for (const choice of sug.choices) auditSuggestionChoice(req, env, choice);
+      }
+      return { allow: true };
     }
 
+    // file paths — the six-option scope menu
     const path = toHomePath(resolved(req), env.home);
     const result = await runPromptFlow({
       ui: env.ui,

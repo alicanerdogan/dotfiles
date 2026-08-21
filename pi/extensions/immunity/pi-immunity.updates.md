@@ -31,14 +31,16 @@ See [`pi-immunity.reflection.md`](pi-immunity.reflection.md) for the full ration
   - `blocked` — asks *and* blocks prompt (LLM DENY shows the menu). **Default.**
   - `everytime` — prompt after every verdict (debugging).
 - Pipeline: session exemption (exact match, in-memory) short-circuits before the LLM → LLM decides with rules fed in order **project rules first, then global** (order = priority; the LLM resolves conflicts) → if the LLM is unavailable, deterministic fallback: `regex` if present, else string match per `exact`.
+- Analyzer policy (system prompt): temporary files belong in `./.tmp` under the project cwd (`mkdir -p ./.tmp`); `/tmp`/`$TMPDIR` stays DENY. `rm -rf` confined to the project's own `./.tmp` is ALLOWED (temp cleanup); anywhere else it stays DENY. Note: if `.tmp` is gitignored, `read`/`write`/`edit` tool access to it hits the gitignored hard default — allowlist `./.tmp` in `paths.rules` when you gitignore it.
 - LLM unavailable *and* no rule match: `strict: true` (default) prompts; `false` allows.
 - Tree-sitter is dropped entirely.
 
 ## Handling blocked requests
 
-**Whole commands** prompt with a plain Allow/Deny — a one-shot call decision, never scope-persisted (no rules, no session statements). Scope choices are reserved for the LLM's flagged subsections:
+**Whole commands** prompt with a plain Allow/Deny — a one-shot call decision, never scope-persisted (no rules, no session statements). The command decision comes **first**; scope choices are reserved for the LLM's flagged subsections, asked only when execution is allowed:
 
-- Suggestion step (bash, when the LLM verdict flagged paths): BEFORE the command decision, one dialog per flagged path: *Allow for session / Allow for project / Allow globally / Protect for project / Protect for global / Skip*. Allow writes `paths.rules {action: "allow"}` (session → in-memory statement); Protect writes `{action: "deny"}` (protect = deny). **Protecting a path answers the command question**: the command is blocked without showing the command menu. All skipped/allowed → the binary Allow/Deny command menu follows. `commands.blocked` suggestions stay audit-only.
+- **Denying the command ends the prompt** — flagged-path suggestions are never asked.
+- Suggestion step (bash, after an Allow, when the LLM verdict flagged paths): one dialog per flagged path: *Allow for session / Allow for project / Allow globally / Protect for project / Protect for global / Skip*. Allow writes `paths.rules {action: "allow"}` (session → in-memory statement); Protect writes `{action: "deny"}` (protect = deny). Protecting a path persists a deny rule **for future commands** — it never blocks the already-allowed command; a failed/dismissed suggestion prompt never undoes an explicit Allow. `commands.blocked` suggestions stay audit-only.
 
 **File paths** keep the six-option scope menu — a path is a durable rule target:
 
@@ -66,6 +68,8 @@ See [`pi-immunity.reflection.md`](pi-immunity.reflection.md) for the full ration
 ```
 
 `autoDeny` and `confirm` are gone (absorbed into `promptWhen`). `appendSystemPrompt` renamed to `userPrompt`.
+
+No-response handling is **manual, no config**: when the analysis fails (timeout, no verdict, spawn, parse, output), the command prompt adds a *Retry analysis* option that re-runs the analyzer on demand — uncapped, user-driven; each attempt is a fresh subprocess with its own `timeoutMs` and its own verdict-trail audit line. The deterministic fallback (rules, then strict) only applies when the user does not retry, and an aborted signal never re-runs.
 
 ## Hooks
 

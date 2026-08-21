@@ -85,9 +85,9 @@ export const DEFAULT_SYSTEM_PROMPT =
   "Policy:\n" +
   "- ALLOWED (risk none|low): safe read-only and ordinary dev commands — listing/reading non-secret files, grep, git status/log/diff, node, builds, tests.\n" +
   "- DENY (risk high), reason explains the alternative:\n" +
-  "  • destructive/irreversible commands: rm -rf, dd to devices, disk formatting\n" +
+  "  • destructive/irreversible commands: rm -rf, dd to devices, disk formatting — with ONE exception: rm -rf confined to the project's own ./.tmp directory (cleaning up temp files) is ALLOWED\n" +
   "  • remote code execution patterns: curl/wget | sh/bash, eval of fetched content\n" +
-  "  • working in /tmp (creating, modifying, deleting files there, running scripts from there): the agent must use the project cwd for temporary files\n" +
+  "  • temporary files go in ./.tmp under the project cwd (mkdir -p ./.tmp when missing) — never /tmp, $TMPDIR, or other temp locations: creating, modifying, deleting files or running scripts there is outside-cwd access and DENY\n" +
   "  • accessing files outside the project cwd — creating, modifying, deleting, or reading files in home directories, /tmp, /etc, or other projects: forbidden unless the Policy line explicitly allows the path; use the project cwd instead\n" +
   "  • read-only does not create an exception: listing, counting, or stat-ing files or directories outside the project cwd is still outside-cwd access and is DENY unless the Policy line allows the path\n" +
   "  • any git write: commit, push (incl. --force), reset, checkout, stash, branch -D, merge, rebase, clean, tag, remote changes — git state is sensitive\n" +

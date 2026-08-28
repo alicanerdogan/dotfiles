@@ -1,0 +1,31 @@
+{
+  "name": "pi-vim",
+  "version": "0.14.1",
+  "description": "Vim-style modal editing for Pi's TUI editor (local fork, dependency-resolution fixed)",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "vim",
+    "editor"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lajarre/pi-vim.git"
+  },
+  "files": [
+    "*.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": ">=0.74.0"
+  }
+}

@@ -143,6 +143,20 @@ function skillIdentifiers(skill: SkillLite, projectRoot: string, home: string): 
   return ids;
 }
 
+// Choose the single identifier to record for a skill in a policy file so the
+// lists stay portable (e.g. inside a dotfiles repo): project-relative when the
+// skill lives under the project root, `~/`-relative when it lives under the
+// home directory, otherwise the absolute path. The result is always one of the
+// identifiers skillIdentifiers recognizes, so matching is unaffected.
+function writeIdentifier(skill: SkillLite, projectRoot: string, home: string): string {
+  const filePath = skill.filePath.replace(/\\/g, "/");
+  const rootPrefix = projectRoot.replace(/\\/g, "/") + "/";
+  const homePrefix = home.replace(/\\/g, "/") + "/";
+  if (filePath.startsWith(rootPrefix)) return filePath.slice(rootPrefix.length);
+  if (filePath.startsWith(homePrefix)) return "~/" + filePath.slice(homePrefix.length);
+  return filePath;
+}
+
 function classify(skill: SkillLite, policy: Policy, projectRoot: string, home: string): ClassState {
   const ids = skillIdentifiers(skill, projectRoot, home);
   for (const id of ids) if (policy.deny.has(id)) return "deny";
@@ -202,7 +216,7 @@ async function moveSkill(skill: SkillLite, list: "allow" | "deny", projectRoot: 
     try { content = await fsp.readFile(filePath, "utf8"); } catch { /* nonexistent */ }
     const kept = content.split(/\r?\n/).filter(keepLine).filter((l) => l.trim() !== "");
     if (appendCanonical) {
-      kept.push(skill.filePath);
+      kept.push(writeIdentifier(skill, projectRoot, home));
     }
     const body = kept.join("\n").replace(/\s+$/, "") + "\n"; // single trailing newline
     await fsp.writeFile(filePath, body, "utf8");

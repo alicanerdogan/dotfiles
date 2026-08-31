@@ -1,5 +1,5 @@
 /**
- * Reason pipeline (design updates doc): the block message returned to the
+ * Reason pipeline: the block message returned to the
  * agent, and the audit log. Pure module — index.ts supplies sessionId,
  * tool names and the resolved audit path.
  *

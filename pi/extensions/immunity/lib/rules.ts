@@ -1,5 +1,5 @@
 /**
- * Rule persistence (design updates doc): write a user's menu choice as a
+ * Rule persistence: write a user's menu choice as a
  * config rule in a chosen scope file (global or project — index.ts picks).
  * Pure fs module; writes are failure-safe (false instead of throw) and
  * idempotent (dedupe). A scope file with invalid JSON is never clobbered.

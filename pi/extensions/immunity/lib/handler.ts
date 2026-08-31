@@ -1,5 +1,5 @@
 /**
- * Tool-call interception flow (design updates doc): the single entry point
+ * Tool-call interception flow: the single entry point
  * that runs the pipeline and turns outcomes into user-visible behavior.
  * Pure module — index.ts adapts pi events into ToolRequest and builds the
  * HandlerEnv (ui, bus, config, session state, session id, paths).

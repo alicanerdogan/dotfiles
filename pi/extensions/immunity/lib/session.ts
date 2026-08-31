@@ -1,5 +1,5 @@
 /**
- * Session statements (design updates doc): in-memory allow/deny exemptions
+ * Session statements: in-memory allow/deny exemptions
  * created by the six-option menu ("for session"). Keys are exact-match by
  * default; a statement stored as `kind: "directory"` also covers every
  * descendant key (prefix match). Checked before the LLM — a session allow

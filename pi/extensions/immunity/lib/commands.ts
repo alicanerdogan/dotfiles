@@ -1,5 +1,5 @@
 /**
- * Deterministic command rule matching (design updates doc). Used only as
+ * Deterministic command rule matching. Used only as
  * the fallback when the LLM is unavailable/disabled — the LLM is the
  * primary judge for shell commands and receives the rules as context.
  *

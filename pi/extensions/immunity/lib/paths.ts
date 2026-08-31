@@ -1,5 +1,5 @@
 /**
- * pi-immunity path engine (design updates doc): scoped rule evaluation for
+ * pi-immunity path engine: scoped rule evaluation for
  * file access.
  *
  * Rule semantics: `kind: "file"` = exact path; `kind: "directory"` =

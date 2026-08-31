@@ -1,5 +1,5 @@
 /**
- * Analysis pipeline (design updates doc): session statements → LLM (bash)
+ * Analysis pipeline: session statements → LLM (bash)
  * or deterministic rules (files) → fallback/strict.
  *
  * Session statements are checked first and are final: an allow short-

@@ -6,7 +6,7 @@
  * The extension entry (index.ts) supplies the real paths (getAgentDir,
  * CONFIG_DIR_NAME, ctx.cwd) and the trust flag (ctx.isProjectTrusted()).
  *
- * Shape (design updates doc):
+ * Shape:
  *   strict        — LLM unavailable AND no rule match → prompt (true, default) or allow
  *   paths.rules   — { action: ask|allow|deny, kind: file|directory, path }
  *                    no globs; `~` allowed; relative must start with ./

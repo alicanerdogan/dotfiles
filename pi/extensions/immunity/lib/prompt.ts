@@ -1,5 +1,5 @@
 /**
- * Decision menus (design updates doc). File paths prompt with the six-option
+ * Decision menus. File paths prompt with the six-option
  * scope menu:
  *
  *   Allow for session / Allow for project / Allow globally

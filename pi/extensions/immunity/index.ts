@@ -5,7 +5,7 @@
  * stays inert (no "not a factory" load diagnostics, no stray tools in the
  * main session).
  *
- * Wiring (design updates doc):
+ * Wiring:
  *   session_start    → load merged, trust-gated config; build scoped rule
  *                      views; clear session statements
  *   tool_call        → interactive-only gate → adapt to ToolRequest →

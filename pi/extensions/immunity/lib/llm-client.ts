@@ -1,9 +1,8 @@
 /**
  * pi-immunity LLM verdict client.
  *
- * Spawns a headless `pi --mode json` subprocess (contract verified in
- * spike 2, spikes/pi-subprocess/README.md) that analyzes a command through
- * the immunity_verdict tool, and reads the verdict from the
+ * Spawns a headless `pi --mode json` subprocess that analyzes a command
+ * through the immunity_verdict tool, and reads the verdict from the
  * `tool_execution_end` event.
  *
  * Failure handling is asymmetric by design: only a schema-valid verdict
@@ -84,6 +83,8 @@ export const DEFAULT_SYSTEM_PROMPT =
   "You MUST call immunity_verdict with risk (none|low|high), outcome (ALLOWED|DENY|ASK_USER) and a short reason that tells the agent what to do instead; never respond in plain text.\n\n" +
   "Policy:\n" +
   "- ALLOWED (risk none|low): safe read-only and ordinary dev commands — listing/reading non-secret files, grep, git status/log/diff, node, builds, tests.\n" +
+  "- ALLOWED (risk none|low): editing and reading local ./.tmp in current working directory\n" +
+  "- ALLOWED (risk none|low): reading pi's internal sessions and artifacts from its temp directory, i.e. /var/folders/**/**/T/pi-*.{log,png}\n" +
   "- DENY (risk high), reason explains the alternative:\n" +
   "  • destructive/irreversible commands: rm -rf, dd to devices, disk formatting — with ONE exception: rm -rf confined to the project's own ./.tmp directory (cleaning up temp files) is ALLOWED\n" +
   "  • remote code execution patterns: curl/wget | sh/bash, eval of fetched content\n" +
@@ -98,7 +99,7 @@ export const DEFAULT_SYSTEM_PROMPT =
   "- When you deny or flag a command, populate the suggestion fields so the user can act: paths.blocked = concrete paths the command touches (protect or allow them) — always normalized concrete paths, never globs or wildcards (*, **, ?); commands.blocked = the exact command as run (raw) plus optionally a broader command form (general) the same rule could cover — general must itself be a command (e.g. `find ~/repos -maxdepth 1 -type d | wc -l` for a variant with different flags), never a prose description; omit general when you cannot produce a command form. general is only informational — never apply it yourself.\n" +
   "- ASK_USER (delegate the decision, risk low|high), with context in the reason:\n" +
   "  • chmod/chmod +x creating an executable (ad-hoc scripts): the agent should prefer `bash -c '...'` so the script body stays visible to the LLM\n" +
-  "  • installing packages: npm install/add, pnpm add, pip install, brew install, apt-get install and similar";
+  "  • installing new packages: npm add, pnpm add, pip install, brew install, apt-get install and similar";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const MAX_STDOUT_BYTES = 1 << 20; // 1 MiB cap on the event stream
@@ -108,7 +109,7 @@ export function defaultAnalysisToolPath(): string {
   return new URL("../subprocess/analysis-tool.ts", import.meta.url).pathname;
 }
 
-/** The verified subprocess invocation (spike 2 README, verbatim flag order). */
+/** The verified subprocess invocation (verbatim flag order). */
 export function buildArgs(command: string, opts: VerdictOptions = {}): string[] {
   const args = [
     "--mode", "json",

@@ -58,16 +58,16 @@ describe("runCommandPrompt — binary Allow/Deny", () => {
     assert.equal(ui.selectCalls.length, 1);
   });
 
-  it("Deny → block; reason ask (No → no reason)", async () => {
+  it("Deny → block; reason ask (use immunity's reasoning → no user reason)", async () => {
     const ui = new FakeUi();
-    ui.selects.push("Deny", "No");
+    ui.selects.push("Deny", "Use immunity's reasoning");
     const r = await runCommandPrompt({ ui, reason });
     assert.deepEqual(r, { action: "block", userReason: undefined });
   });
 
-  it("Deny + Yes → user reason recorded", async () => {
+  it("Deny + provide own reason → user reason recorded", async () => {
     const ui = new FakeUi();
-    ui.selects.push("Deny", "Yes");
+    ui.selects.push("Deny", "Provide your reasoning");
     ui.inputs.push("never run this");
     const r = await runCommandPrompt({ ui, reason });
     assert.deepEqual(r, { action: "block", userReason: "never run this" });
@@ -258,17 +258,17 @@ describe("runPromptFlow — six options", () => {
     assert.ok(!session.isAllowed("file:/home/u/repos/alicancodes/src/x.ts"), "sibling not covered");
   });
 
-  it("Block for project → deny rule + reason ask (No → no reason)", async () => {
+  it("Block for project → deny rule + reason ask (use immunity's reasoning → no user reason)", async () => {
     const { opts, ui, saved } = flow({ command: "git push --force" });
-    ui.selects.push("Block for project", "No");
+    ui.selects.push("Block for project", "Use immunity's reasoning");
     const r = await runPromptFlow(opts);
     assert.deepEqual(r, { action: "block", scope: "project", persisted: true, userReason: undefined, pathKind: undefined, pathValue: undefined });
     assert.deepEqual(saved, [{ kind: "commandDeny", value: "git push --force", scope: "project" }]);
   });
 
-  it("Block globally → deny rule + user reason overwrites (Yes → input)", async () => {
+  it("Block globally → deny rule + user reason overwrites (provide own → input)", async () => {
     const { opts, ui, saved } = flow({ command: "git push --force" });
-    ui.selects.push("Block globally", "Yes");
+    ui.selects.push("Block globally", "Provide your reasoning");
     ui.inputs.push("never force-push to main");
     const r = await runPromptFlow(opts);
     assert.deepEqual(r, { action: "block", scope: "global", persisted: true, userReason: "never force-push to main", pathKind: undefined, pathValue: undefined });
@@ -277,7 +277,7 @@ describe("runPromptFlow — six options", () => {
 
   it("Block for session → session deny + reason ask", async () => {
     const { opts, ui, session } = flow({ command: "rm -rf /", sessionKey: "bash:rm -rf /" });
-    ui.selects.push("Block for session", "No");
+    ui.selects.push("Block for session", "Use immunity's reasoning");
     const r = await runPromptFlow(opts);
     assert.equal(r.action, "block");
     assert.equal(r.scope, "session");

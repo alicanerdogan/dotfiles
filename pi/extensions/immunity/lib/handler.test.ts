@@ -156,7 +156,7 @@ describe("handleToolCall — outside cwd boundary + menu", () => {
 
   it("outside file → Block for project + reason → blocked; rule + audit written", async () => {
     const { env, ui, dir } = makeEnv({ config: { llm: LLM_OFF } });
-    ui.selects.push("Block for project", undefined, "Yes"); // follow-up dismissed → file rule
+    ui.selects.push("Block for project", undefined, "Provide your reasoning"); // follow-up dismissed → file rule
     ui.inputs.push("never touch /etc/hosts");
     const r = await handleToolCall(file("/etc/hosts"), env);
     assert.equal(r.allow, false);
@@ -228,7 +228,7 @@ describe("handleToolCall — bash verdicts and silent blocks", () => {
 
   it("LLM DENY + blocked (default) → prompt → user denies once; no session state, no rule", async () => {
     const { env, ui, dir } = makeEnv({ llmClient: async () => verdict("high", "DENY") });
-    ui.selects.push("Deny", "No");
+    ui.selects.push("Deny", "Use immunity's reasoning");
     const r = await handleToolCall(bash("rm -rf x"), env);
     assert.equal(r.allow, false);
     assert.match(r.reason, /Blocked by user/);
@@ -287,7 +287,7 @@ describe("handleToolCall — bash verdicts and silent blocks", () => {
         verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
       }),
     });
-    ui.selects.push("Deny", "No");
+    ui.selects.push("Deny", "Use immunity's reasoning");
     const r = await handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
     assert.equal(r.allow, false);
     assert.ok(!ui.selectCalls.some((c) => c.title.includes("analyzer flagged")), "no suggestion dialogs after a Deny");
@@ -344,7 +344,7 @@ describe("handleToolCall — bash verdicts and silent blocks", () => {
       config: { llm: LLM_OFF },
       rules: { commands: { project: [{ action: "ask", exact: false, raw: "npm install" }] } },
     });
-    ui.selects.push("Deny", "No");
+    ui.selects.push("Deny", "Use immunity's reasoning");
     const r = await handleToolCall(bash("npm install lodash"), env);
     assert.equal(r.allow, false);
     assert.match(r.reason, /Blocked by user/);
@@ -380,7 +380,7 @@ describe("handleToolCall — manual analysis retry", () => {
   it("deny after a failed analysis blocks without further attempts", async () => {
     let calls = 0;
     const { env, ui } = makeEnv({ llmClient: async () => (calls++, inconclusive) });
-    ui.selects.push("Deny", "No");
+    ui.selects.push("Deny", "Use immunity's reasoning");
     const r = await handleToolCall(bash("ls -la"), env);
     assert.equal(r.allow, false);
     assert.equal(calls, 1);
@@ -426,7 +426,7 @@ describe("handleToolCall — hooks", () => {
         seen = { command, env: e };
       },
     });
-    ui.selects.push("Block for session", "No");
+    ui.selects.push("Block for session", "Use immunity's reasoning");
     await handleToolCall(file("/etc/hosts"), env);
     assert.equal(seen?.command, "notify-send x");
     assert.equal(seen?.env.IMMUNITY_FEATURE, "file");

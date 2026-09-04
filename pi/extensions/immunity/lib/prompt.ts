@@ -8,9 +8,9 @@
  * Session choices are in-memory statements (final for the session). Project
  * and global choices persist rules via the saveRule hook — always exact:
  * commands as `{ action, exact: true, raw }`, paths as `{ action, kind, path }`.
- * After a Block* choice the user is asked whether they want to provide a
- * reason (built-in, not configurable); a user-provided reason overwrites the
- * model's reason.
+ * After a Block* choice the user is asked whether to use immunity's
+ * reasoning or provide their own (built-in, not configurable); a user-provided
+ * reason overwrites the model's reason.
  *
  * Whole commands prompt with a plain Allow/Deny (`runCommandPrompt`) — scope
  * choices make sense only for the suggestion step's flagged subsections, not
@@ -185,11 +185,11 @@ export async function runCommandPrompt(opts: { ui: PromptUi; reason: string; ret
 async function askReason(ui: PromptUi): Promise<string | undefined> {
   let answer: string | undefined;
   try {
-    answer = await ui.select("Add a reason for blocking?", ["No", "Yes"]);
+    answer = await ui.select("Provide reason for blocking?", ["Use immunity's reasoning", "Provide your reasoning"]);
   } catch {
     return undefined;
   }
-  if (answer !== "Yes") return undefined;
+  if (answer !== "Provide your reasoning") return undefined;
   try {
     return await ui.input("Reason for blocking");
   } catch {

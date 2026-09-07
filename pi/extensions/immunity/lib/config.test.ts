@@ -31,6 +31,14 @@ describe("defaults", () => {
     assert.equal(DEFAULT_CONFIG.audit.enabled, true);
   });
 
+  it("llm.maxParallel defaults to 8; invalid values fall back", () => {
+    assert.equal(normalizeConfig(null).llm.maxParallel, 8);
+    assert.equal(normalizeConfig({ llm: { maxParallel: 2 } }).llm.maxParallel, 2);
+    assert.equal(normalizeConfig({ llm: { maxParallel: 0 } }).llm.maxParallel, 8);
+    assert.equal(normalizeConfig({ llm: { maxParallel: -3 } }).llm.maxParallel, 8);
+    assert.equal(normalizeConfig({ llm: { maxParallel: "lots" } }).llm.maxParallel, 8);
+  });
+
   it("tolerates unknown keys ($schema) and drops invalid sections", () => {
     const c = normalizeConfig({ $schema: "file:///x", bogus: 1, llm: { provider: 42 } });
     assert.deepEqual(c.llm, DEFAULT_CONFIG.llm);

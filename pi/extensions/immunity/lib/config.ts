@@ -14,7 +14,8 @@
  *   commands.rules— { action: allow|deny|ask, exact?, raw, regex? }
  *                    regex is deterministic-only, never fed to the LLM
  *   commands.promptWhen — 'asked' | 'blocked' (default) | 'everytime'
- *   llm           — disabled (opt-out, default on), provider/model/timeoutMs/userPrompt/piPath
+ *   llm           — disabled (opt-out, default on), provider/model/timeoutMs/userPrompt/piPath,
+ *                    maxParallel (cap on concurrent analyzer subprocesses, default 8)
  *   hooks.afterPrompt — user command run when a prompt opens
  *   audit.enabled — default on
  *
@@ -65,6 +66,8 @@ export interface LlmConfig {
   userPrompt: string;
   piPath: string;
   timeoutMs: number;
+  /** max analyzer subprocesses running at once (sibling batch preflight) */
+  maxParallel: number;
 }
 
 export interface HooksConfig {
@@ -96,6 +99,7 @@ export const DEFAULT_CONFIG: ImmunityConfig = {
     userPrompt: "",
     piPath: "",
     timeoutMs: 30_000,
+    maxParallel: 8,
   },
   hooks: { afterPrompt: "" },
   audit: { enabled: true },
@@ -231,6 +235,7 @@ export function mergeConfig(global: ImmunityConfig, projectRaw: Record<string, u
       userPrompt: asStringOr(pl, "userPrompt", global.llm.userPrompt),
       piPath: asStringOr(pl, "piPath", global.llm.piPath),
       timeoutMs: asPositiveNumberOr(pl, "timeoutMs", global.llm.timeoutMs),
+      maxParallel: asPositiveNumberOr(pl, "maxParallel", global.llm.maxParallel),
     },
     hooks: {
       afterPrompt: asStringOr(ph, "afterPrompt", global.hooks.afterPrompt),

@@ -14,7 +14,7 @@ const file = (target: string, tool = "read"): ToolRequest => ({ kind: "file", to
 const PR = (action: PathRule["action"], path: string, kind: PathRule["kind"] = "file"): PathRule => ({ action, kind, path });
 const CR = (action: CommandRule["action"], raw: string, opts: Partial<CommandRule> = {}): CommandRule => ({ action, exact: false, raw, ...opts });
 
-const LLM_OFF: LlmConfig = { disabled: true, provider: "", model: "", userPrompt: "", piPath: "", timeoutMs: 30_000 };
+const LLM_OFF: LlmConfig = { disabled: true, provider: "", model: "", userPrompt: "", piPath: "", timeoutMs: 30_000, maxParallel: 8 };
 
 function opts(over: Partial<PipelineOptions> = {}): PipelineOptions {
   return {
@@ -224,6 +224,23 @@ describe("commands — deterministic fallback", () => {
 
     const r2 = await runPipeline(bash("ls -la"), opts({ strict: false, llm: { ...LLM_OFF, disabled: false }, llmClient: async () => inconclusive }));
     assert.deepEqual(r2.outcome, { outcome: "allow", reason: "no rule matched" });
+  });
+});
+
+describe("prestarted verdicts (sibling preflight)", () => {
+  it("consumes the prestarted verdict instead of calling llmClient", async () => {
+    let llmCalls = 0;
+    const r = await runPipeline(
+      bash("ls -la"),
+      opts({
+        llm: { ...LLM_OFF, disabled: false },
+        llmClient: async () => (llmCalls++, verdict("none", "ALLOWED")),
+        prestartedVerdict: Promise.resolve(verdict("none", "ALLOWED")),
+      }),
+    );
+    assert.equal(r.outcome.outcome, "allow");
+    assert.equal(llmCalls, 0);
+    assert.equal(r.stages.some((s) => s.stage === "llm"), true);
   });
 });
 

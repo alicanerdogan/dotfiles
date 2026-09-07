@@ -417,6 +417,30 @@ describe("handleToolCall — manual analysis retry", () => {
   });
 });
 
+describe("handleToolCall — prestarted verdicts (sibling preflight)", () => {
+  it("consumes the prestarted verdict on the first attempt without calling llmClient", async () => {
+    let llmCalls = 0;
+    const { env, dir } = makeEnv({ llmClient: async () => (llmCalls++, verdict("none", "ALLOWED")) });
+    const r = await handleToolCall(bash("ls -la"), env, Promise.resolve(verdict("none", "ALLOWED")));
+    assert.deepEqual(r, { allow: true });
+    assert.equal(llmCalls, 0, "the prestarted verdict was used");
+    const verdicts = auditLines(dir).filter((l) => l.event === "verdict");
+    assert.equal(verdicts.length, 1);
+    assert.equal(verdicts[0].outcome, "ALLOWED", "verdict trail still audited");
+  });
+
+  it("a manual retry after a prestarted failure re-analyzes via llmClient", async () => {
+    let llmCalls = 0;
+    const { env, ui } = makeEnv({ llmClient: async () => (llmCalls++, verdict("none", "ALLOWED")) });
+    ui.selects.push("Retry analysis");
+    const failed: VerdictResult = { ok: false, kind: "timeout", error: "no verdict within 30000ms" };
+    const r = await handleToolCall(bash("ls -la"), env, Promise.resolve(failed));
+    assert.deepEqual(r, { allow: true });
+    assert.deepEqual(ui.selectCalls[0].options, ["Allow", "Deny", "Retry analysis"]);
+    assert.equal(llmCalls, 1, "the retry ran a fresh analysis");
+  });
+});
+
 describe("handleToolCall — hooks", () => {
   it("hooks.afterPrompt runs before the menu with context env", async () => {
     let seen: { command: string; env: Record<string, string> } | null = null;

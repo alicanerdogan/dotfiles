@@ -100,6 +100,8 @@ export interface PipelineOptions {
   gitIgnoreCheck?: (path: string, cwd: string) => Promise<boolean>;
   /** injectable LLM client for tests; defaults to the real subprocess client */
   llmClient?: (command: string, opts: VerdictOptions) => Promise<VerdictResult>;
+  /** verdict pre-started by the sibling batch preflight (same tool call); used instead of llmClient on the first attempt */
+  prestartedVerdict?: Promise<VerdictResult>;
   /** passed through to requestVerdict (ctx.signal) */
   signal?: AbortSignal;
 }
@@ -200,16 +202,18 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions): Prom
   let llmFailed = false;
   if (!opts.llm.disabled) {
     const client = opts.llmClient ?? requestVerdict;
-    const result = await client(req.command, {
-      piPath: opts.llm.piPath,
-      provider: opts.llm.provider,
-      model: opts.llm.model,
-      userPrompt: opts.llm.userPrompt,
-      timeoutMs: opts.llm.timeoutMs,
-      signal: opts.signal,
-      cwd: req.cwd,
-      policy: formatPolicy(opts.paths, opts.commands),
-    });
+    const result = opts.prestartedVerdict
+      ? await opts.prestartedVerdict
+      : await client(req.command, {
+          piPath: opts.llm.piPath,
+          provider: opts.llm.provider,
+          model: opts.llm.model,
+          userPrompt: opts.llm.userPrompt,
+          timeoutMs: opts.llm.timeoutMs,
+          signal: opts.signal,
+          cwd: req.cwd,
+          policy: formatPolicy(opts.paths, opts.commands),
+        });
     llmStage = { stage: "llm", result, verdict: result.ok ? result.verdict : undefined };
     stages.push(llmStage);
     if (!result.ok) llmFailed = true; // no response — the prompt may offer a manual re-run

@@ -105,9 +105,17 @@ function resolved(req: ToolRequest): string {
   return expandPath(req.target, { cwd: req.cwd, home: req.home });
 }
 
-export async function handleToolCall(req: ToolRequest, env: HandlerEnv): Promise<HandlerResult> {
+export async function handleToolCall(
+  req: ToolRequest,
+  env: HandlerEnv,
+  /** verdict pre-started by the sibling batch preflight; first attempt only */
+  prestartedVerdict?: Promise<VerdictResult>,
+): Promise<HandlerResult> {
   const { config } = env;
   const status = env.setStatus;
+  // the prestarted verdict is valid for the first attempt only — a manual
+  // "Retry analysis" means a fresh verdict trail
+  let prestarted = prestartedVerdict;
   try {
     // Each analysis attempt runs the pipeline once; a "Retry analysis"
     // choice loops back here for a fresh attempt (user-driven, uncapped).
@@ -122,8 +130,10 @@ export async function handleToolCall(req: ToolRequest, env: HandlerEnv): Promise
         session: env.session,
         gitIgnoreCheck: env.gitIgnoreCheck,
         llmClient: env.llmClient,
+        prestartedVerdict: prestarted,
         signal: env.signal,
       });
+      prestarted = undefined;
       const { outcome, stages } = r;
 
       // verdict trail: one line per LLM analysis attempt, so "why did this

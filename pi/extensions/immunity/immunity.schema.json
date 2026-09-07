@@ -60,6 +60,7 @@
         "provider": { "type": "string" },
         "model": { "type": "string" },
         "timeoutMs": { "type": "number", "minimum": 1, "default": 30000 },
+        "maxParallel": { "type": "number", "minimum": 1, "default": 8, "description": "Cap on analyzer subprocesses running at once when sibling bash calls are analyzed in parallel" },
         "userPrompt": { "type": "string", "description": "User-authored policy text appended to the analyzer system prompt" },
         "piPath": { "type": "string", "description": "pi binary for the headless analyzer subprocess (default: pi on PATH)" }
       }

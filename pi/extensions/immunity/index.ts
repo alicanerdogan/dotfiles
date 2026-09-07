@@ -34,7 +34,9 @@ import { defaultAuditPath } from "./lib/audit.ts";
 import { isSkillPath } from "./lib/paths.ts";
 import { writeRule, type RuleKind } from "./lib/rules.ts";
 import { shouldEnforce } from "./lib/gate.ts";
-import type { ToolRequest } from "./lib/pipeline.ts";
+import { bashSiblings, startSiblingVerdicts } from "./lib/preflight.ts";
+import { formatPolicy, type ToolRequest } from "./lib/pipeline.ts";
+import type { VerdictResult } from "./lib/llm-client.ts";
 
 const HOME = homedir();
 
@@ -80,8 +82,49 @@ function pathKindOf(value: string): "file" | "directory" {
 }
 
 export default function (pi: ExtensionAPI) {
+  /** sibling-batch verdicts keyed by toolCallId; null = session-resolved, deliberately not started */
+  const pendingVerdicts = new Map<string, Promise<VerdictResult> | null>();
+
+  /**
+   * Sibling preflight: pi runs the tool_call handlers of one assistant
+   * message sequentially, so awaiting the analysis inline would serialize
+   * the LLM verdicts. The full message (all sibling calls) is already in
+   * the session manager when the first handler fires — start a verdict
+   * for every bash sibling in parallel there; the later handlers consume
+   * their already-running verdict (their toolCallId is already pending).
+   */
+  const preflightVerdict = (toolCallId: string, ctx: ExtensionContext, load: LoadResult): Promise<VerdictResult> | undefined => {
+    if (pendingVerdicts.has(toolCallId)) return pendingVerdicts.get(toolCallId) ?? undefined;
+    let siblings;
+    try {
+      // the assistant message carrying the sibling calls is the session leaf
+      // by the time tool_call handlers run (pi drains Agent events first)
+      const leaf = ctx.sessionManager.getLeafEntry();
+      const messages = leaf?.type === "message" ? [leaf.message] : [];
+      siblings = bashSiblings(messages, toolCallId);
+    } catch {
+      return undefined; // unexpected session-manager shape — fall back to inline analysis
+    }
+    if (!siblings) return undefined;
+    return startSiblingVerdicts(
+      siblings,
+      toolCallId,
+      {
+        session,
+        cwd: ctx.cwd,
+        home: HOME,
+        llm: load.config.llm,
+        policy: formatPolicy(load.rules.paths, load.rules.commands),
+        maxParallel: load.config.llm.maxParallel,
+        signal: ctx.signal,
+      },
+      pendingVerdicts,
+    );
+  };
+
   pi.on("session_start", async (_event, ctx) => {
     session.clear();
+    pendingVerdicts.clear();
     loaded = loadConfig({
       globalPath: globalConfigPath(),
       projectPath: join(ctx.cwd, CONFIG_DIR_NAME, "immunity.json"),
@@ -103,7 +146,9 @@ export default function (pi: ExtensionAPI) {
     if (!config) return; // no session_start yet — do not gate
     const req = toRequest(event, ctx.cwd);
     if (!req) return;
-    const result = await handleToolCall(req, buildEnv(ctx, pi));
+    const prestarted =
+      req.kind === "bash" && !config.llm.disabled ? preflightVerdict(event.toolCallId, ctx, loaded!) : undefined;
+    const result = await handleToolCall(req, buildEnv(ctx, pi), prestarted);
     return result.allow ? undefined : { block: true, reason: result.reason };
   });
 }

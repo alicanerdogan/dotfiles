@@ -63,6 +63,13 @@ describe("path input contract", () => {
     assert.ok(!isValidPathInput("./a[b]"));
     assert.ok(!isValidPathInput("~/?" ));
   });
+
+  it("accepts env-var paths ($VAR, ${VAR}, ${VAR:-default})", () => {
+    assert.ok(isValidPathInput("$GOMODCACHE"));
+    assert.ok(isValidPathInput("${GOMODCACHE}"));
+    assert.ok(isValidPathInput("${CARGO_HOME}/registry"));
+    assert.ok(isValidPathInput("${XDG_DATA_HOME:-/tmp}/pnpm"));
+  });
 });
 
 describe("asPathRule", () => {
@@ -71,6 +78,14 @@ describe("asPathRule", () => {
       action: "ask",
       kind: "file",
       path: "./.env",
+    });
+  });
+
+  it("parses env-var paths", () => {
+    assert.deepEqual(asPathRule({ action: "allow", kind: "directory", path: "${GOMODCACHE}" }), {
+      action: "allow",
+      kind: "directory",
+      path: "${GOMODCACHE}",
     });
   });
 

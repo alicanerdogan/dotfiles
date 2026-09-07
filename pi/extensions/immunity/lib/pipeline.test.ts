@@ -257,6 +257,18 @@ describe("formatPolicy", () => {
     assert.ok(!p.includes("regex"), "regex never leaves the config");
   });
 
+  it("resolves env-var path rules for the feed, keeping literals when unresolvable", () => {
+    const p = formatPolicy(
+      { project: [PR("allow", "${GOMODCACHE}", "directory")], global: [PR("deny", "${NOPE}", "directory")] },
+      { project: [], global: [] },
+      { GOMODCACHE: "/home/u/go/pkg/mod" },
+    );
+    assert.equal(
+      p,
+      "project rules (higher priority): paths [allow directory /home/u/go/pkg/mod] | global rules: paths [deny directory ${NOPE}]",
+    );
+  });
+
   it("empty policy", () => {
     assert.equal(formatPolicy({ project: [], global: [] }, { project: [], global: [] }), "");
   });

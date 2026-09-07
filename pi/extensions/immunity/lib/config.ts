@@ -131,10 +131,20 @@ function asBoolean(x: unknown): boolean | null {
 
 const GLOB_METACHARS = /[*?[\]]/;
 
-/** Path input contract: no globs; `~` allowed; relative must start with `./`. */
+// Env-var reference in a rule path: `$VAR`, `${VAR}`, `${VAR:-default}`.
+// `$` is not a glob metachar, so these are orthogonal to the glob check.
+export const ENV_REF = /\$(?:\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|([A-Za-z_][A-Za-z0-9_]*))/g;
+// Non-global presence test (no lastIndex state) — also exported so the
+// path engine can recognize env paths without a separate definition.
+export const HAS_ENV_REF = /\$[A-Za-z_{]/;
+
+/** Path input contract: no globs; `~` allowed; relative must start with `./`;
+ * env refs (`$VAR`/`${VAR}`/`${VAR:-default}`) allowed. */
 export function isValidPathInput(path: string): boolean {
   if (!path || GLOB_METACHARS.test(path)) return false;
-  return path === "~" || path.startsWith("~/") || path.startsWith("./") || path.startsWith("/");
+  return (
+    path === "~" || path.startsWith("~/") || path.startsWith("./") || path.startsWith("/") || HAS_ENV_REF.test(path)
+  );
 }
 
 function isValidRegExp(s: string): boolean {

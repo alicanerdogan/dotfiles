@@ -2,7 +2,7 @@ import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { evaluatePath, expandPath, gitCheckIgnore, isOutsideScope, isSkillPath, matchesRule, realResolve, scopeDecision } from "./paths.ts";
+import { evaluatePath, expandEnvRulePath, expandPath, gitCheckIgnore, isOutsideScope, isSkillPath, matchesRule, realResolve, scopeDecision } from "./paths.ts";
 import type { PathRule } from "./config.ts";
 
 const tmpDirs: string[] = [];
@@ -156,6 +156,69 @@ describe("evaluatePath — scope precedence and hard defaults", () => {
     const e = await evaluatePath("./link/f.txt", { cwd: join(dir, "repo"), home, project: [], global: [], gitIgnoreCheck: notIgnored });
     assert.equal(e.decision, "deny");
     assert.equal(e.outside, true);
+  });
+});
+
+describe("expandEnvRulePath", () => {
+  it("expands $VAR, ${VAR}, and embedded refs", () => {
+    const env = { GOMODCACHE: "/home/u/go/pkg/mod", CARGO_HOME: "/home/u/.cargo" };
+    assert.equal(expandEnvRulePath("$GOMODCACHE", env), "/home/u/go/pkg/mod");
+    assert.equal(expandEnvRulePath("${GOMODCACHE}", env), "/home/u/go/pkg/mod");
+    assert.equal(expandEnvRulePath("${CARGO_HOME}/registry", env), "/home/u/.cargo/registry");
+  });
+
+  it("${VAR:-default} uses the value when set, the default when unset/empty", () => {
+    assert.equal(expandEnvRulePath("${XDG_DATA_HOME:-/tmp}/pnpm", {}), "/tmp/pnpm");
+    assert.equal(expandEnvRulePath("${XDG_DATA_HOME:-/tmp}/pnpm", { XDG_DATA_HOME: "" }), "/tmp/pnpm");
+    assert.equal(expandEnvRulePath("${XDG_DATA_HOME:-/tmp}/pnpm", { XDG_DATA_HOME: "/home/u/data" }), "/home/u/data/pnpm");
+  });
+
+  it("unset var with no default → null (rule is inert)", () => {
+    assert.equal(expandEnvRulePath("${GOMODCACHE}", {}), null);
+    assert.equal(expandEnvRulePath("$NOPE", {}), null);
+  });
+
+  it("empty-string var with no default → null", () => {
+    assert.equal(expandEnvRulePath("${GOMODCACHE}", { GOMODCACHE: "" }), null);
+  });
+
+  it("leaves non-env paths unchanged", () => {
+    assert.equal(expandEnvRulePath("/abs/path", {}), "/abs/path");
+    assert.equal(expandEnvRulePath("~/keys", {}), "~/keys");
+    assert.equal(expandEnvRulePath("./x", {}), "./x");
+  });
+});
+
+describe("evaluatePath — env-var rule paths", () => {
+  const cwd = "/repo";
+  const home = "/home/u";
+  const notIgnored = async () => false;
+
+  it("resolves env vars and lets a target inside the expanded dir through", async () => {
+    const e = await evaluatePath("/home/u/go/pkg/mod/github.com/x/y@v1.0.0", {
+      cwd,
+      home,
+      project: [R("allow", "${GOMODCACHE}", "directory")],
+      global: [],
+      env: { GOMODCACHE: "/home/u/go/pkg/mod" },
+      gitIgnoreCheck: notIgnored,
+    });
+    assert.equal(e.decision, "allow");
+    assert.equal(e.scope, "project");
+  });
+
+  it("omits an unresolvable rule so the path falls to the hard default", async () => {
+    // env unset → rule inert → target (outside cwd) hits the outside-cwd deny default
+    const e = await evaluatePath("/home/u/go/pkg/mod/x", {
+      cwd,
+      home,
+      project: [R("allow", "${GOMODCACHE}", "directory")],
+      global: [],
+      env: {},
+      gitIgnoreCheck: notIgnored,
+    });
+    assert.equal(e.decision, "deny");
+    assert.equal(e.scope, "default");
   });
 });
 

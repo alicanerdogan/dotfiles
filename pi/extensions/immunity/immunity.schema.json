@@ -22,8 +22,8 @@
               "kind": { "enum": ["file", "directory"], "description": "directory = recursive (the directory and all descendants)" },
               "path": {
                 "type": "string",
-                "description": "No globs. ~ allowed. Relative must start with ./",
-                "pattern": "^(~|~/|\\./|/)"
+                "description": "No globs. ~ allowed. Relative must start with ./. Env refs allowed ($VAR, ${VAR}, ${VAR:-default}). An unset var with no default omits the rule (inert).",
+                "pattern": "^(~|~/|\\./|/|\\$)"
               }
             }
           }

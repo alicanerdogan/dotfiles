@@ -20,7 +20,7 @@
 import { realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, join, resolve } from "node:path";
-import type { PathRule } from "./config.ts";
+import { ENV_REF, HAS_ENV_REF, type PathRule } from "./config.ts";
 
 export type Decision = "allow" | "ask" | "deny";
 
@@ -45,12 +45,47 @@ export interface PathEvalOptions {
   global: PathRule[];
   /** gitignore check for the resolved target; default: real `git check-ignore` */
   gitIgnoreCheck?: (path: string, cwd: string) => Promise<boolean>;
+  /** env for resolving `$VAR`/`${VAR}`/`${VAR:-default}` rule paths; default process.env */
+  env?: Record<string, string | undefined>;
 }
 
 /** Expand a leading `~/` and resolve relative paths against cwd. */
 export function expandPath(target: string, opts: { cwd: string; home: string }): string {
   const expanded = target === "~" ? opts.home : target.startsWith("~/") ? join(opts.home, target.slice(2)) : target;
   return resolve(opts.cwd, expanded);
+}
+
+/**
+ * Resolve env-var references in a rule path (`$VAR`, `${VAR}`, `${VAR:-default}`).
+ * Returns the expanded path, or `null` when a referenced var is unset with no
+ * default — an unresolvable rule is inert (matches nothing) so it is omitted
+ * rather than collapsing to an empty string that could match the cwd or `/`.
+ */
+export function expandEnvRulePath(path: string, env: Record<string, string | undefined>): string | null {
+  if (!HAS_ENV_REF.test(path)) return path;
+  let unresolved = false;
+  const expanded = path.replace(ENV_REF, (_m, braced: string | undefined, fallback: string | undefined, bare: string | undefined) => {
+    const name = braced ?? bare;
+    let value = env[name];
+    if ((value === undefined || value === "") && fallback !== undefined) value = fallback;
+    if (value === undefined || value === "") {
+      unresolved = true;
+      return "";
+    }
+    return value;
+  });
+  return unresolved ? null : expanded;
+}
+
+/** Resolve a rules list for the environment, omitting unresolvable (env-unset) rules. */
+function resolveRulePaths(rules: PathRule[], env: Record<string, string | undefined>): PathRule[] {
+  const out: PathRule[] = [];
+  for (const rule of rules) {
+    const path = expandEnvRulePath(rule.path, env);
+    if (path === null) continue;
+    out.push(path === rule.path ? rule : { ...rule, path });
+  }
+  return out;
 }
 
 /**
@@ -129,14 +164,17 @@ export function gitCheckIgnore(path: string, cwd: string): Promise<boolean> {
 
 export async function evaluatePath(target: string, opts: PathEvalOptions): Promise<PathEval> {
   const resolved = expandPath(target, opts);
+  const env = opts.env ?? process.env;
+  const project = resolveRulePaths(opts.project, env);
+  const global = resolveRulePaths(opts.global, env);
   const outside = isOutsideScope(realResolve(resolved), opts.cwd);
   const gitIgnored = outside ? false : await (opts.gitIgnoreCheck ?? gitCheckIgnore)(resolved, opts.cwd);
 
-  const projectMatch = scopeDecision(opts.project.filter((r) => matchesRule(r, resolved, opts)));
+  const projectMatch = scopeDecision(project.filter((r) => matchesRule(r, resolved, opts)));
   if (projectMatch) {
     return { decision: projectMatch.decision, scope: "project", rule: projectMatch.rule, outside, gitIgnored };
   }
-  const globalMatch = scopeDecision(opts.global.filter((r) => matchesRule(r, resolved, opts)));
+  const globalMatch = scopeDecision(global.filter((r) => matchesRule(r, resolved, opts)));
   if (globalMatch) {
     return { decision: globalMatch.decision, scope: "global", rule: globalMatch.rule, outside, gitIgnored };
   }

@@ -22,7 +22,7 @@
  * rule match, `strict` decides — prompt (default) or allow.
  */
 import { matchRules } from "./commands.ts";
-import { evaluatePath, expandPath, scopeDecision, type PathEval } from "./paths.ts";
+import { evaluatePath, expandEnvRulePath, expandPath, scopeDecision, type PathEval } from "./paths.ts";
 import { requestVerdict, type Verdict, type VerdictOptions, type VerdictResult } from "./llm-client.ts";
 import type { CommandRule, LlmConfig, PathRule, PromptWhen } from "./config.ts";
 import { SessionState } from "./session.ts";
@@ -107,12 +107,16 @@ export interface PipelineOptions {
 }
 
 /** Compact policy feed for the analyzer: scoped rules, project (higher priority) first. */
-export function formatPolicy(paths: { project: PathRule[]; global: PathRule[] }, commands: { project: CommandRule[]; global: CommandRule[] }): string {
+export function formatPolicy(
+  paths: { project: PathRule[]; global: PathRule[] },
+  commands: { project: CommandRule[]; global: CommandRule[] },
+  env: Record<string, string | undefined> = process.env,
+): string {
   const parts: string[] = [];
   const scopePart = (label: string, pathRules: PathRule[], commandRules: CommandRule[]) => {
     const bits: string[] = [];
     if (pathRules.length) {
-      bits.push(`paths [${pathRules.map((r) => `${r.action} ${r.kind} ${r.path}`).join(", ")}]`);
+      bits.push(`paths [${pathRules.map((r) => `${r.action} ${r.kind} ${expandEnvRulePath(r.path, env) ?? r.path}`).join(", ")}]`);
     }
     if (commandRules.length) {
       bits.push(`commands [${commandRules.map((r) => `${r.action}${r.exact ? " (exact)" : ""} ${r.raw}`).join(", ")}]`);

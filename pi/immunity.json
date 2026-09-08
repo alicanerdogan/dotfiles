@@ -16,6 +16,11 @@
         "action": "allow",
         "kind": "directory",
         "path": "./node_modules"
+      },
+      {
+        "action": "allow",
+        "kind": "directory",
+        "path": "${TMPDIR}"
       }
     ]
   },

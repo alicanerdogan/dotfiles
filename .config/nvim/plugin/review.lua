@@ -4,6 +4,6 @@ vim.api.nvim_create_user_command('Review', function(args)
 end, {
   nargs = '?',
   range = true,
-  complete = function() return { 'add', 'edit', 'delete', 'list', 'clear', 'export', 'hunks' } end,
-  desc = 'Code review comments: add|edit|delete|list|clear|export|hunks',
+  complete = function() return { 'add', 'edit', 'delete', 'list', 'clear', 'export', 'hunks', 'files' } end,
+  desc = 'Code review comments: add|edit|delete|list|clear|export|hunks|files',
 })

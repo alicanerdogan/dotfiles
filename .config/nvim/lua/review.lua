@@ -276,14 +276,14 @@ local function export()
   vim.notify('Review: ' .. #comments .. ' comment(s) copied as Markdown', vim.log.levels.INFO)
 end
 
-local function hunks()
+-- Parse `git diff` into changed files and the start line of each hunk.
+-- Sorted the way `ls` lists paths (case-insensitive), which differs from
+-- git's byte-wise ordering (e.g. `lua/B.lua` comes after `lua/a.lua`).
+local function diff_entries()
   local out = vim.fn.system('git diff --no-ext-diff --unified=0')
-  if vim.v.shell_error ~= 0 or out == '' then
-    vim.notify('Review: no unstaged changes', vim.log.levels.INFO)
-    return
-  end
+  if vim.v.shell_error ~= 0 or out == '' then return nil end
 
-  local qf = {}
+  local entries = {}
   local file = nil
   for line in out:gmatch('[^\n]+') do
     -- Match --- a/filename (default prefix) or --- filename (noprefix)
@@ -293,9 +293,31 @@ local function hunks()
     elseif file then
       local lnum = line:match('^@@ %-(%d+)')
       if lnum then
-        table.insert(qf, { filename = file, lnum = tonumber(lnum), text = line })
+        table.insert(entries, { file = file, lnum = tonumber(lnum), header = line })
       end
     end
+  end
+
+  table.sort(entries, function(a, b)
+    local af, bf = a.file:lower(), b.file:lower()
+    if af ~= bf then return af < bf end
+    if a.file ~= b.file then return a.file < b.file end
+    return a.lnum < b.lnum
+  end)
+
+  return entries
+end
+
+local function hunks()
+  local entries = diff_entries()
+  if not entries then
+    vim.notify('Review: no unstaged changes', vim.log.levels.INFO)
+    return
+  end
+
+  local qf = {}
+  for _, e in ipairs(entries) do
+    table.insert(qf, { filename = e.file, lnum = e.lnum, text = e.header })
   end
 
   if #qf == 0 then
@@ -304,6 +326,31 @@ local function hunks()
   end
 
   vim.fn.setqflist({}, 'r', { title = 'Review: unstaged hunks', items = qf })
+  vim.cmd.copen()
+end
+
+local function files()
+  local entries = diff_entries()
+  if not entries then
+    vim.notify('Review: no unstaged changes', vim.log.levels.INFO)
+    return
+  end
+
+  local qf = {}
+  local seen = {}
+  for _, e in ipairs(entries) do
+    if not seen[e.file] then
+      seen[e.file] = true
+      table.insert(qf, { filename = e.file, lnum = e.lnum, text = e.file })
+    end
+  end
+
+  if #qf == 0 then
+    vim.notify('Review: no files found', vim.log.levels.INFO)
+    return
+  end
+
+  vim.fn.setqflist({}, 'r', { title = 'Review: ' .. #qf .. ' changed file(s)', items = qf })
   vim.cmd.copen()
 end
 
@@ -332,6 +379,8 @@ function M.dispatch(args)
     export()
   elseif sub == 'hunks' then
     hunks()
+  elseif sub == 'files' then
+    files()
   else
     vim.notify('Review: unknown subcommand "' .. sub .. '"', vim.log.levels.ERROR)
   end

@@ -40,8 +40,9 @@ gui:
 git:
   pull:
     mode: 'rebase'
-  pagers:
-    - externalDiffCommand: "difft --color=always"
+  diffRenderers:
+    - command: "difft --color=always"
+      type: extDiff
   mainBranches:
     - master
     - main

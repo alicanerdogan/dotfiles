@@ -5,8 +5,12 @@ function notify --description "Native MacOS Notification"
     set TITLE $DEFAULT_TITLE
     set SUBTITLE $DEFAULT_SUBTITLE
 
-    if [ -n "$1" ]
-        set TITLE $1
+    if test -n "$argv[1]"
+        set TITLE $argv[1]
+    end
+
+    if test -n "$argv[2]"
+        set SUBTITLE $argv[2]
     end
 
     osascript -e "display notification \"Terminal\" with title \"$TITLE\" subtitle \"$SUBTITLE\" sound name \"Blow\""
@@ -115,7 +119,7 @@ function gh-pr-set-body --description "Set GitHub PR body from a markdown file"
     gh pr edit $pr_number --body-file "$markdown_file"
 end
 
-function pvim --description "Pick a project to open in vim"
+function _project_pick --description "Interactively pick a project directory, printing its path"
     set -l query $argv[1]
     set PROJECT_DIRS ~/src ~/repos ~/repos/sandbox ~/repos/xcode
     # apply PROJECT_PRIORITY from global env
@@ -130,7 +134,7 @@ function pvim --description "Pick a project to open in vim"
     end
 
     if test (count $existing_dirs) -eq 0
-        echo "No project directories found: $PROJECT_DIRS"
+        echo "No project directories found: $PROJECT_DIRS" >&2
         return 1
     end
 
@@ -166,8 +170,22 @@ function pvim --description "Pick a project to open in vim"
     or return
 
     set -l dir (string split \t "$selected")[1]
+    echo "$dir"
+end
+
+function pvim --description "Pick a project to open in vim"
+    set -l dir (_project_pick $argv[1])
+    or return
+
     cd "$dir"
     $EDITOR .
+end
+
+function pcd --description "Pick a project to cd into"
+    set -l dir (_project_pick $argv[1])
+    or return
+
+    cd "$dir"
 end
 
 function set_git_aliases
@@ -237,6 +255,7 @@ function set_env_vars
     set -x PATH "$HOME/.cargo/bin" $PATH
     set -x PATH $HOMEBREW_DIR/opt/rustup/bin $PATH
     set -x PATH "$HOME/.config/fish/bin" $PATH
+    set -x PATH "$HOME/.local/bin" $PATH
 
     # pnpm
     set -gx PNPM_HOME "~/Library/pnpm"

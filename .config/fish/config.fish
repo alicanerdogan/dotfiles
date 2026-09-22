@@ -181,6 +181,13 @@ function pvim --description "Pick a project to open in vim"
     $EDITOR .
 end
 
+function rvim --description "Open current directory in vim review mode"
+    nvim \
+        -c 'Neotree close' \
+        -c 'Review files' \
+        -c 'lua if #vim.fn.getqflist() > 0 then vim.cmd("cfirst"); vim.cmd("HunkDiffToggle") end'
+end
+
 function pcd --description "Pick a project to cd into"
     set -l dir (_project_pick $argv[1])
     or return

@@ -21,6 +21,36 @@
         "action": "allow",
         "kind": "directory",
         "path": "${TMPDIR}"
+      },
+      {
+        "action": "allow",
+        "kind": "directory",
+        "path": "./.pi"
+      },
+      {
+        "action": "allow",
+        "kind": "directory",
+        "path": "./.tmp"
+      },
+      {
+        "action": "allow",
+        "kind": "directory",
+        "path": "${FNM_DIR}"
+      },
+      {
+        "action": "allow",
+        "kind": "directory",
+        "path": "${FNM_MULTISHELL_PATH}"
+      },
+      {
+        "action": "allow",
+        "kind": "directory",
+        "path": "${PNPM_HOME}"
+      },
+      {
+        "action": "allow",
+        "kind": "directory",
+        "path": "${GOPATH}"
       }
     ]
   },
@@ -36,7 +66,7 @@
     "piPath": ""
   },
   "hooks": {
-    "afterPrompt": ""
+    "afterPrompt": "/opt/homebrew/bin/fish -c \"notify 'Awaiting user input'\""
   },
   "audit": {
     "enabled": true

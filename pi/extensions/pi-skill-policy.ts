@@ -20,7 +20,6 @@
 
 import {
   CONFIG_DIR_NAME,
-  formatSkillsForPrompt,
   type ExtensionAPI,
   type Skill,
 } from "@earendil-works/pi-coding-agent";
@@ -32,10 +31,6 @@ import * as path from "node:path";
 const ALLOWLIST = "skill-allowlist";
 const DENYLIST = "skill-denylist";
 const SKILL_PREFIX = "skill:";
-// Matches the exact block `formatSkillsForPrompt` emits so we can strip it
-// before reinserting a policy-filtered version.
-const SKILLS_BLOCK_RE = /\n\nThe following skills provide specialized instructions[\s\S]*?<\/available_skills>/;
-const CWD_TAIL_RE = /\nCurrent working directory: [^\n]*$/;
 
 // Idempotency marker for the private-API startup-resource patch.
 const PATCHED = Symbol.for("skill-policy.showLoadedResources.patched");
@@ -420,16 +415,9 @@ export default function (pi: ExtensionAPI) {
     const policy = await readPolicy(projectRoot, home);
     if (!policy.explicit) return; // preserve default Pi behavior
 
-    const allSkills: Skill[] = event.systemPromptOptions.skills ?? [];
-    if (allSkills.length === 0) return;
+    const skills = event.systemPromptOptions.skills;
+    if (!skills || skills.length === 0) return;
 
-    const allowed = allSkills.filter((s) => isAllowed(s, policy, projectRoot, home));
-
-    const selectedTools = event.systemPromptOptions.selectedTools;
-    const readActive = !selectedTools || selectedTools.includes("read");
-
-    const prompt = event.systemPrompt.replace(SKILLS_BLOCK_RE, "");
-    if (!readActive || allowed.length === 0) return { systemPrompt: prompt };
-    return { systemPrompt: prompt.replace(CWD_TAIL_RE, `${formatSkillsForPrompt(allowed)}$&`) };
+    event.systemPromptOptions.skills = skills.filter((s) => isAllowed(s, policy, projectRoot, home));
   });
 }

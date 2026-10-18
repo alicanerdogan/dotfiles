@@ -3,9 +3,6 @@
   "defaultProvider": "opencode-go",
   "defaultModel": "deepseek-v4.1-flash",
   "defaultThinkingLevel": "high",
-  "packages": [
-    "npm:pi-mcp-adapter@2.11.0"
-  ],
   "extensions": [
     "local/extensions"
   ],

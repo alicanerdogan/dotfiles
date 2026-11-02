@@ -32,8 +32,8 @@ Examples:
     worktree --repo /path/to/repo new feature-branch
 
 Creating worktrees:
-    Create a git worktree with a new branch from HEAD. Will error if the
-    branch already exists locally.
+    Create a git worktree with a new branch from the invoking worktree's HEAD.
+    Will error if the branch already exists locally.
 
     Will copy over some untracked files to the new worktree. By default, this includes
     .env, .envrc, .env.local, .tool-versions, and mise.toml files.
@@ -274,6 +274,17 @@ function cmd_new
     # Replace colons and slashes with underscores for directory naming
     set dirname (string replace -a "/" "_" (string replace -a ":" "_" "$branchname"))
 
+    # Capture the invoking worktree's HEAD before switching to the main
+    # repository — stacked worktrees branch from the worktree you ran the
+    # command in, not from main's HEAD.
+    set source_root (get_git_root)
+    or return 1
+    set base_commit (git -C "$source_root" rev-parse HEAD 2>/dev/null)
+    or begin
+        die "Failed to determine HEAD of $source_root"
+        return 1
+    end
+
     # Find the main repository and change to it; if you run this command
     # from a worktree or subdirectory, this will make sure it still does
     # the right thing
@@ -297,8 +308,8 @@ function cmd_new
         return 1
     end
 
-    # Create a new branch
-    if not git worktree add -b "$branchname" "$worktree_path"
+    # Create a new branch from the invoking worktree's HEAD
+    if not git worktree add -b "$branchname" "$worktree_path" "$base_commit"
         die "failed to create git worktree $branchname"
         return 1
     end

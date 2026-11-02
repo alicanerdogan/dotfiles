@@ -7,11 +7,11 @@
 // the CDP session open. Chrome's "Allow debugging" modal fires once per
 // daemon (= once per tab). Daemons auto-exit after 20min idle.
 
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from 'fs';
-import { homedir } from 'os';
-import { resolve } from 'path';
-import { spawn } from 'child_process';
-import net from 'net';
+const { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } = require('node:fs');
+const { homedir } = require('node:os');
+const { resolve } = require('node:path');
+const { spawn } = require('node:child_process');
+const net = require('node:net');
 
 const TIMEOUT = 15000;
 const NAVIGATION_TIMEOUT = 30000;
@@ -36,6 +36,11 @@ function sockPath(targetId) {
 }
 
 function getWsUrl() {
+  // Direct endpoint override: useful for remote browsers, SSH tunnels, or
+  // explicit ports. Takes precedence over all file-based discovery.
+  const direct = process.env.CDP_WS_URL?.trim();
+  if (direct) return direct;
+
   const home = homedir();
   // macOS: ~/Library/Application Support/<name>/DevToolsActivePort
   const macBrowsers = [
@@ -762,6 +767,14 @@ EVAL SAFETY NOTE
   eval calls when the list can change between calls (e.g. after clicking
   "Ignore" buttons on a feed — indices shift). Prefer stable selectors or
   collect all data in a single eval.
+
+ENDPOINT CONFIGURATION
+  CDP_WS_URL      Full ws:// endpoint; takes precedence over file discovery
+  CDP_HOST        Host used with DevToolsActivePort (default 127.0.0.1)
+  CDP_PORT_FILE   Explicit path to a DevToolsActivePort file
+
+  Per-tab daemons keep the endpoint they started with. After changing these
+  variables or switching browsers, run "cdp stop" and retry the command.
 
 DAEMON IPC (for advanced use / scripting)
   Each tab runs a persistent daemon at Unix socket in the runtime dir (see below).

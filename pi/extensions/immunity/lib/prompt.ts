@@ -34,6 +34,8 @@ export type MenuScope = "session" | "project" | "global";
 export interface PromptResult {
   action: "allow" | "block";
   scope: MenuScope;
+  /** the session aborted while a dialog was open — nothing was persisted or audited */
+  cancelled?: boolean;
   /** rule write success for project/global choices (audit); undefined for session */
   persisted?: boolean;
   /** present exactly when the user typed one after a Block* choice */
@@ -59,6 +61,8 @@ export interface PromptFlowOptions {
   path?: string;
   /** inferred kind (index.ts stats the target): directory targets skip the follow-up */
   pathKind?: "file" | "directory";
+  /** session abort signal — cancels active dialogs without persisting or auditing */
+  signal?: AbortSignal;
 }
 
 export const MENU_OPTIONS = [
@@ -79,27 +83,82 @@ export function oneLine(text: string, max = 200): string {
 /** Follow-up for path rules: narrow (the file) or recursive (the containing/this directory). */
 const PATH_KIND_OPTIONS = ["Just this file", "The whole directory (recursive)"] as const;
 
-async function pathKindChoice(ui: PromptUi, inferred: "file" | "directory"): Promise<"file" | "directory"> {
-  if (inferred === "directory") return "directory"; // a directory target is already the directory — no follow-up
-  let choice: string | undefined;
+const CANCELLED = Symbol("cancelled");
+
+/** Resolve with the promise value, or CANCELLED when the signal aborts first. */
+function raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T | typeof CANCELLED> {
+  if (!signal) return p;
+  if (signal.aborted) return Promise.resolve(CANCELLED);
+  return new Promise<T | typeof CANCELLED>((resolve, reject) => {
+    const onAbort = () => {
+      cleanup();
+      resolve(CANCELLED);
+    };
+    const cleanup = () => signal.removeEventListener("abort", onAbort);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (err) => {
+        cleanup();
+        reject(err);
+      },
+    );
+  });
+}
+
+interface ChoiceResult {
+  choice?: string;
+  cancelled: boolean;
+  failed: boolean;
+}
+
+async function choose(ui: PromptUi, title: string, options: string[], signal?: AbortSignal): Promise<ChoiceResult> {
+  if (signal?.aborted) return { cancelled: true, failed: false };
   try {
-    choice = await ui.select("Apply the rule to?", [...PATH_KIND_OPTIONS]);
+    const choice = await raceAbort(ui.select(title, options), signal);
+    if (choice === CANCELLED) return { cancelled: true, failed: false };
+    return { choice, cancelled: false, failed: false };
   } catch {
-    return "file"; // a broken follow-up must not widen the rule
+    return { cancelled: false, failed: true };
   }
-  return choice === "The whole directory (recursive)" ? "directory" : "file";
+}
+
+async function askInput(ui: PromptUi, title: string, signal?: AbortSignal): Promise<{ value?: string; cancelled: boolean }> {
+  if (signal?.aborted) return { cancelled: true };
+  try {
+    const value = await raceAbort(ui.input(title), signal);
+    if (value === CANCELLED) return { cancelled: true };
+    return { value, cancelled: false };
+  } catch {
+    return { cancelled: false };
+  }
+}
+
+function cancelledFlow(): PromptResult {
+  return { action: "block", scope: "session", cancelled: true };
+}
+
+async function pathKindChoice(
+  ui: PromptUi,
+  inferred: "file" | "directory",
+  signal?: AbortSignal,
+): Promise<{ kind: "file" | "directory"; cancelled: boolean }> {
+  if (inferred === "directory") return { kind: "directory", cancelled: false }; // a directory target is already the directory — no follow-up
+  const result = await choose(ui, "Apply the rule to?", [...PATH_KIND_OPTIONS], signal);
+  if (result.cancelled) return { kind: "file", cancelled: true };
+  if (result.failed) return { kind: "file", cancelled: false }; // a broken follow-up must not widen the rule
+  return { kind: result.choice === "The whole directory (recursive)" ? "directory" : "file", cancelled: false };
 }
 
 export async function runPromptFlow(opts: PromptFlowOptions): Promise<PromptResult> {
-  let choice: string | undefined;
-  try {
-    choice = await opts.ui.select(`Immunity: ${oneLine(opts.reason)}`, [...MENU_OPTIONS]);
-  } catch {
-    return { action: "block", scope: "session" }; // broken prompt must not let the call through
-  }
-  if (choice === undefined) {
-    return { action: "block", scope: "session" };
-  }
+  const picked = await choose(opts.ui, `Immunity: ${oneLine(opts.reason)}`, [...MENU_OPTIONS], opts.signal);
+  if (picked.cancelled) return cancelledFlow();
+  if (picked.failed) return { action: "block", scope: "session" }; // broken prompt must not let the call through
+  const choice = picked.choice;
+  if (choice === undefined) return { action: "block", scope: "session" };
 
   // path requests: resolve the rule kind + effective value (follow-up for
   // file targets; a directory choice on a file target applies to its parent)
@@ -108,7 +167,9 @@ export async function runPromptFlow(opts: PromptFlowOptions): Promise<PromptResu
   let sessionKey = opts.sessionKey;
   if (opts.path !== undefined) {
     const inferred = opts.pathKind ?? "file";
-    pathKind = await pathKindChoice(opts.ui, inferred);
+    const kindChoice = await pathKindChoice(opts.ui, inferred, opts.signal);
+    if (kindChoice.cancelled) return cancelledFlow();
+    pathKind = kindChoice.kind;
     pathValue = opts.path;
     if (pathKind === "directory" && inferred === "file") {
       pathValue = dirname(pathValue);
@@ -132,23 +193,32 @@ export async function runPromptFlow(opts: PromptFlowOptions): Promise<PromptResu
   if (kind) {
     const scope: "project" | "global" = choice.endsWith("globally") ? "global" : "project";
     const value = opts.command ?? pathValue;
+    // Ask for a block reason before writing the rule: a dialog cancelled
+    // mid-flow must not leave a persisted permission or block behind.
+    const reason: ReasonResult = choice.startsWith("Block")
+      ? await askReason(opts.ui, opts.signal)
+      : { cancelled: false };
+    if (reason.cancelled) return cancelledFlow();
+    if (opts.signal?.aborted) return cancelledFlow();
     const persisted = value !== undefined ? await opts.saveRule(kind, value, scope, pathKind ? { pathKind } : undefined) : false;
     const common = { persisted, pathKind, pathValue };
     if (choice.startsWith("Block")) {
-      const userReason = await askReason(opts.ui);
-      return { action: "block", scope, userReason, ...common };
+      return { action: "block", scope, userReason: reason.reason, ...common };
     }
     return { action: "allow", scope, ...common };
   }
 
   // session choices — memory only, final for the session
   if (choice === "Allow for session") {
+    if (opts.signal?.aborted) return cancelledFlow();
     opts.session.addAllow(sessionKey, pathKind ?? "file");
     return { action: "allow", scope: "session", pathKind, pathValue };
   }
+  const reason = await askReason(opts.ui, opts.signal);
+  if (reason.cancelled) return cancelledFlow();
+  if (opts.signal?.aborted) return cancelledFlow();
   opts.session.addDeny(sessionKey, pathKind ?? "file");
-  const userReason = await askReason(opts.ui);
-  return { action: "block", scope: "session", userReason, pathKind, pathValue };
+  return { action: "block", scope: "session", userReason: reason.reason, pathKind, pathValue };
 }
 
 /* ------------------------------------------------------------------ */
@@ -165,36 +235,40 @@ export const RETRY_ANALYSIS = "Retry analysis" as const;
 export type CommandPromptResult =
   | { action: "allow" }
   | { action: "block"; userReason?: string }
-  | { action: "retry" };
+  | { action: "retry" }
+  | { action: "cancel" };
 
-export async function runCommandPrompt(opts: { ui: PromptUi; reason: string; retryable?: boolean }): Promise<CommandPromptResult> {
-  let choice: string | undefined;
-  try {
-    const options = opts.retryable ? [...COMMAND_OPTIONS, RETRY_ANALYSIS] : [...COMMAND_OPTIONS];
-    choice = await opts.ui.select(`Immunity: ${oneLine(opts.reason)}`, options);
-  } catch {
-    return { action: "block" }; // broken prompt must not let the call through
-  }
+export async function runCommandPrompt(opts: {
+  ui: PromptUi;
+  reason: string;
+  retryable?: boolean;
+  signal?: AbortSignal;
+}): Promise<CommandPromptResult> {
+  const options = opts.retryable ? [...COMMAND_OPTIONS, RETRY_ANALYSIS] : [...COMMAND_OPTIONS];
+  const picked = await choose(opts.ui, `Immunity: ${oneLine(opts.reason)}`, options, opts.signal);
+  if (picked.cancelled) return { action: "cancel" };
+  if (picked.failed) return { action: "block" }; // broken prompt must not let the call through
+  const choice = picked.choice;
   if (choice === undefined) return { action: "block" }; // dismissed → block (safety-first)
   if (choice === "Allow") return { action: "allow" };
   if (choice === RETRY_ANALYSIS) return { action: "retry" };
-  const userReason = await askReason(opts.ui);
-  return { action: "block", userReason };
+  const reason = await askReason(opts.ui, opts.signal);
+  if (reason.cancelled) return { action: "cancel" };
+  return { action: "block", userReason: reason.reason };
 }
 
-async function askReason(ui: PromptUi): Promise<string | undefined> {
-  let answer: string | undefined;
-  try {
-    answer = await ui.select("Provide reason for blocking?", ["Use immunity's reasoning", "Provide your reasoning"]);
-  } catch {
-    return undefined;
-  }
-  if (answer !== "Provide your reasoning") return undefined;
-  try {
-    return await ui.input("Reason for blocking");
-  } catch {
-    return undefined;
-  }
+interface ReasonResult {
+  reason?: string;
+  cancelled: boolean;
+}
+
+async function askReason(ui: PromptUi, signal?: AbortSignal): Promise<ReasonResult> {
+  const answer = await choose(ui, "Provide reason for blocking?", ["Use immunity's reasoning", "Provide your reasoning"], signal);
+  if (answer.cancelled) return { cancelled: true };
+  if (answer.failed || answer.choice !== "Provide your reasoning") return { cancelled: false };
+  const input = await askInput(ui, "Reason for blocking", signal);
+  if (input.cancelled) return { cancelled: true };
+  return { reason: input.value, cancelled: false };
 }
 
 /* ------------------------------------------------------------------ */
@@ -219,6 +293,8 @@ export interface SuggestionStepOptions {
   saveRule: (kind: RuleKind, value: string, scope: "project" | "global", opts?: { pathKind?: "file" | "directory" }) => boolean | Promise<boolean>;
   /** kind inference (stats the target); default file */
   pathKindFor?: (path: string) => "file" | "directory";
+  /** session abort signal — cancels the active suggestion dialog */
+  signal?: AbortSignal;
 }
 
 export interface SuggestionStepResult {
@@ -230,6 +306,8 @@ export interface SuggestionStepResult {
   protectedPath?: string;
   /** the prompt failed → the caller decides; it never blocks an allowed command */
   failed: boolean;
+  /** the session aborted the active dialog — no choice was recorded for it */
+  cancelled?: boolean;
 }
 
 const SUGGESTION_OPTIONS = [
@@ -251,12 +329,15 @@ export async function runSuggestionStep(opts: SuggestionStepOptions): Promise<Su
   for (let i = 0; i < paths.length; i++) {
     const path = paths[i];
     const pathKind = opts.pathKindFor?.(path) ?? "file";
-    let choice: string | undefined;
-    try {
-      choice = await opts.ui.select(`Immunity (${i + 1}/${paths.length}): analyzer flagged ${path}`, [...SUGGESTION_OPTIONS]);
-    } catch {
-      return { choices, protected: true, failed: true }; // a broken prompt must not let the call through
-    }
+    const picked = await choose(
+      opts.ui,
+      `Immunity (${i + 1}/${paths.length}): analyzer flagged ${path}`,
+      [...SUGGESTION_OPTIONS],
+      opts.signal,
+    );
+    if (picked.cancelled) return { choices, protected: true, failed: true, cancelled: true };
+    if (picked.failed) return { choices, protected: true, failed: true }; // a broken prompt must not let the call through
+    const choice = picked.choice;
     if (choice === undefined) {
       return { choices, protected: true, failed: true }; // dismissed → block (safety-first)
     }

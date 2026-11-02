@@ -37,6 +37,9 @@ import { shouldEnforce } from "./lib/gate.ts";
 import { bashSiblings, startSiblingVerdicts } from "./lib/preflight.ts";
 import { formatPolicy, type ToolRequest } from "./lib/pipeline.ts";
 import type { VerdictResult } from "./lib/llm-client.ts";
+import { AnalysisLimiter } from "./lib/limiter.ts";
+import { ApprovalQueue } from "./lib/queue.ts";
+import { StatusCounter } from "./lib/status.ts";
 
 const HOME = homedir();
 
@@ -84,6 +87,12 @@ function pathKindOf(value: string): "file" | "directory" {
 export default function (pi: ExtensionAPI) {
   /** sibling-batch verdicts keyed by toolCallId; null = session-resolved, deliberately not started */
   const pendingVerdicts = new Map<string, Promise<VerdictResult> | null>();
+  /** one approval flow at a time — concurrent tool calls must not compete for the UI */
+  let approvals = new ApprovalQueue();
+  /** session-wide analyzer limiter (maxParallel applies across preflights, nested calls and retries) */
+  let limiter: AnalysisLimiter | undefined;
+  /** refcounted analysis indicator shared by concurrent handlers */
+  let status: StatusCounter | undefined;
 
   /**
    * Sibling preflight: pi runs the tool_call handlers of one assistant
@@ -116,6 +125,7 @@ export default function (pi: ExtensionAPI) {
         llm: load.config.llm,
         policy: formatPolicy(load.rules.paths, load.rules.commands),
         maxParallel: load.config.llm.maxParallel,
+        limiter,
         signal: ctx.signal,
       },
       pendingVerdicts,
@@ -130,6 +140,14 @@ export default function (pi: ExtensionAPI) {
       projectPath: join(ctx.cwd, CONFIG_DIR_NAME, "immunity.json"),
       trusted: ctx.isProjectTrusted(),
     });
+    limiter = new AnalysisLimiter(loaded.config.llm.maxParallel);
+    // a new session gets a fresh queue; old handlers keep the queue they
+    // captured, so a cancelled session cannot block the next one.
+    approvals = new ApprovalQueue();
+    status?.reset();
+    status = ctx.hasUI
+      ? new StatusCounter((label) => ctx.ui.setStatus("immunity", label ?? undefined))
+      : undefined;
     if (!ctx.hasUI) return;
     for (const scope of loaded.scopes) {
       if (scope.error) ctx.ui.notify(`immunity: ${scope.path}: ${scope.error}`, "warning");
@@ -138,6 +156,9 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", () => {
     session.clear();
+    status?.reset();
+    status = undefined;
+    limiter = undefined;
   });
 
   pi.on("tool_call", async (event, ctx) => {
@@ -148,14 +169,22 @@ export default function (pi: ExtensionAPI) {
     if (!req) return;
     const prestarted =
       req.kind === "bash" && !config.llm.disabled ? preflightVerdict(event.toolCallId, ctx, loaded!) : undefined;
-    const result = await handleToolCall(req, buildEnv(ctx, pi), prestarted);
+    const result = await handleToolCall(req, buildEnv(ctx, pi, { approvals, limiter, status }), prestarted);
     return result.allow ? undefined : { block: true, reason: result.reason };
   });
 }
 
-function buildEnv(ctx: ExtensionContext, pi: ExtensionAPI): HandlerEnv {
+interface BuildEnvRuntime {
+  approvals: ApprovalQueue;
+  limiter?: AnalysisLimiter;
+  status?: StatusCounter;
+}
+
+function buildEnv(ctx: ExtensionContext, pi: ExtensionAPI, runtime: BuildEnvRuntime): HandlerEnv {
+  const { approvals, limiter, status } = runtime;
   const config = loaded!.config;
   const rules: ScopedRuleViews = loaded!.rules;
+  const currentStatus = status;
   const trusted = ctx.isProjectTrusted();
   const projectScope = join(ctx.cwd, CONFIG_DIR_NAME, "immunity.json");
   const ruleScope = trusted ? projectScope : globalConfigPath();
@@ -204,12 +233,14 @@ function buildEnv(ctx: ExtensionContext, pi: ExtensionAPI): HandlerEnv {
     config,
     rules,
     session,
+    approvals,
+    limiter,
     bus: { emit: (channel, data) => pi.events.emit(channel, data) },
     sessionId,
     cwd: ctx.cwd,
     home: HOME,
     ui: ctx.ui,
-    setStatus: (label) => ctx.ui.setStatus("immunity", label ?? undefined),
+    setStatus: (label) => currentStatus?.set(label),
     log: (msg) => console.error(msg),
     signal: ctx.signal,
     auditFile,

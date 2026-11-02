@@ -9,7 +9,10 @@
  * (pi drains Agent events through AgentSession before tool_call fires).
  * The first handler therefore starts a verdict subprocess for EVERY bash
  * sibling; the later handlers consume their already-running verdict and
- * the batch costs roughly one analysis latency in total.
+ * the batch costs roughly one analysis latency in total. Verdicts schedule
+ * through the session-wide AnalysisLimiter, so llm.maxParallel holds across
+ * sibling batches, nested calls and manual retries; queued verdicts are
+ * dropped when the session aborts.
  *
  * Batch bookkeeping: entries are keyed by toolCallId; a later handler
  * finds its id in the map and skips the preflight. Entries the pipeline
@@ -18,6 +21,7 @@
  * a session-resolved sibling does not re-trigger the preflight.
  */
 import { requestVerdict, type VerdictOptions, type VerdictResult } from "./llm-client.ts";
+import { AnalysisLimiter } from "./limiter.ts";
 import { grantKey } from "./pipeline.ts";
 import type { LlmConfig } from "./config.ts";
 import type { SessionState } from "./session.ts";
@@ -68,6 +72,8 @@ export interface PreflightEnv {
   policy: string;
   /** max analyzer subprocesses running at once (llm.maxParallel, default 8) */
   maxParallel: number;
+  /** session-wide limiter shared by preflights, nested calls and retries */
+  limiter?: AnalysisLimiter;
   /** session abort signal (ctx.signal) */
   signal?: AbortSignal;
   /** injectable for tests */
@@ -89,6 +95,7 @@ export function startSiblingVerdicts(
 ): Promise<VerdictResult> | undefined {
   batch.clear();
   const request = env.request ?? requestVerdict;
+  const limiter = env.limiter ?? new AnalysisLimiter(env.maxParallel);
 
   /** verdict jobs in sibling order; session-resolved siblings are marked null — the pipeline short-circuits before the LLM */
   const jobs: { id: string; command: string; opts: VerdictOptions }[] = [];
@@ -114,27 +121,14 @@ export function startSiblingVerdicts(
     });
   }
 
-  // concurrency cap: at most maxParallel subprocesses at once, the rest
-  // queue and start as slots free. Batches never overlap (every handler
-  // of a batch resolves before the next assistant message preflights),
-  // so a per-batch scheduler is equivalent to a global one.
-  const max = Math.max(1, env.maxParallel);
-  const deferred = jobs.map(() => Promise.withResolvers<VerdictResult>());
-  let next = 0;
-  let active = 0;
-  const pump = () => {
-    while (active < max && next < jobs.length) {
-      const i = next++;
-      active++;
-      request(jobs[i].command, jobs[i].opts).then((r) => {
-        active--;
-        deferred[i].resolve(r);
-        pump();
-      });
-    }
-  };
-  pump();
-
-  for (const [i, job] of jobs.entries()) batch.set(job.id, deferred[i].promise);
+  // concurrency cap: session-wide through the shared limiter (a per-batch
+  // one is created when the caller doesn't supply it, e.g. in tests).
+  // Queued work is cancellable and every slot is released on failure.
+  for (const job of jobs) {
+    batch.set(
+      job.id,
+      limiter.schedule(() => request(job.command, job.opts), env.signal),
+    );
+  }
   return batch.get(toolCallId) ?? undefined;
 }

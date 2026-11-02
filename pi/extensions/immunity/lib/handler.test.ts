@@ -1,14 +1,16 @@
 import { after, describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_CONFIG, type ImmunityConfig } from "./config.ts";
-import { handleToolCall, type HandlerEnv, type ScopedRuleViews } from "./handler.ts";
+import { handleToolCall, CANCELLED_REASON, type HandlerEnv, type ScopedRuleViews } from "./handler.ts";
 import { SessionState } from "./session.ts";
 import { FakeBus, FakeUi } from "./testing.ts";
 import { writeRule } from "./rules.ts";
 import type { ToolRequest } from "./pipeline.ts";
 import type { VerdictResult } from "./llm-client.ts";
+import { ApprovalQueue } from "./queue.ts";
+import { AnalysisLimiter } from "./limiter.ts";
 
 const HOME = "/home/u";
 const tmpDirs: string[] = [];
@@ -38,6 +40,10 @@ interface EnvOpts {
   onPromptCommand?: (command: string, env: Record<string, string>) => void;
   pathKindFor?: (target: string) => "file" | "directory";
   session?: SessionState;
+  approvals?: ApprovalQueue;
+  limiter?: AnalysisLimiter;
+  signal?: AbortSignal;
+  ui?: FakeUi;
 }
 
 function makeEnv(o: EnvOpts = {}): { env: HandlerEnv; ui: FakeUi; dir: string; bus: FakeBus } {
@@ -61,17 +67,20 @@ function makeEnv(o: EnvOpts = {}): { env: HandlerEnv; ui: FakeUi; dir: string; b
       global: [...(o.rules?.commands?.global ?? [])],
     },
   };
-  const ui = new FakeUi();
+  const ui = o.ui ?? new FakeUi();
   const bus = new FakeBus();
   const env: HandlerEnv = {
     config,
     rules,
     session: o.session ?? new SessionState(),
+    approvals: o.approvals ?? new ApprovalQueue(),
+    limiter: o.limiter,
     bus,
     sessionId: "test-session",
     cwd: join(dir, "repo"),
     home: HOME,
     ui,
+    signal: o.signal,
     auditFile: join(dir, "audit.jsonl"),
     ruleScope: join(dir, "project-immunity.json"),
     globalRuleScope: join(dir, "global-immunity.json"),
@@ -456,5 +465,226 @@ describe("handleToolCall — hooks", () => {
     assert.equal(seen?.env.IMMUNITY_FEATURE, "file");
     assert.ok(seen?.env.IMMUNITY_PROMPT_ID);
     assert.ok(seen?.env.IMMUNITY_REASON);
+  });
+});
+
+/** UI fake whose dialogs stay open until the test answers them. */
+class ControlledUi extends FakeUi {
+  pending: { title: string; options: string[]; resolve: (value: string | undefined) => void }[] = [];
+  override select(title: string, options: string[]): Promise<string | undefined> {
+    this.selectCalls.push({ title, options });
+    return new Promise<string | undefined>((resolve) => this.pending.push({ title, options, resolve }));
+  }
+  answer(value: string | undefined): void {
+    const next = this.pending.shift();
+    if (!next) throw new Error("no pending select");
+    next.resolve(value);
+  }
+  /** Wait until a dialog is open, then return its title/options. */
+  async nextSelect(): Promise<{ title: string; options: string[] }> {
+    while (this.pending.length === 0) await new Promise((r) => setImmediate(r));
+    return this.pending[0];
+  }
+}
+
+const tick = () => new Promise((r) => setImmediate(r));
+
+describe("handleToolCall — concurrent approval flows", () => {
+  it("opens one dialog at a time and skips a stale dialog after a session grant", async () => {
+    const approvals = new ApprovalQueue();
+    const ui = new ControlledUi();
+    const { env } = makeEnv({ config: { llm: LLM_OFF }, approvals, ui });
+
+    const first = handleToolCall(file("/etc/hosts"), env);
+    await ui.nextSelect();
+    const second = handleToolCall(file("/etc/hosts"), env);
+    while (approvals.pendingCount < 2) await tick();
+
+    assert.equal(ui.pending.length, 1, "only one approval dialog is open");
+    ui.answer("Allow for session");
+    await ui.nextSelect(); // path-kind follow-up for the first flow
+    ui.answer("Just this file");
+
+    assert.deepEqual(await first, { allow: true });
+    assert.deepEqual(await second, { allow: true });
+    assert.equal(ui.selectCalls.length, 2, "the queued request rechecked and skipped its dialog");
+  });
+
+  it("rechecks a queued request against a newly granted session block", async () => {
+    const approvals = new ApprovalQueue();
+    const ui = new ControlledUi();
+    const { env, dir } = makeEnv({ config: { llm: LLM_OFF }, approvals, ui });
+
+    const first = handleToolCall(file("/etc/hosts"), env);
+    await ui.nextSelect();
+    const second = handleToolCall(file("/etc/hosts"), env);
+    while (approvals.pendingCount < 2) await tick();
+
+    ui.answer("Block for session");
+    await ui.nextSelect(); // path-kind follow-up
+    ui.answer("Just this file");
+    await ui.nextSelect(); // reason ask
+    ui.answer("Use immunity's reasoning");
+
+    assert.equal((await first).allow, false);
+    const secondResult = await second;
+    assert.equal(secondResult.allow, false);
+    assert.match(secondResult.allow === false ? secondResult.reason : "", /Blocked by session/);
+    assert.equal(ui.selectCalls.length, 3, "the queued request rechecked and skipped its dialog");
+    const blocks = auditLines(dir).filter((l) => l.event === "block");
+    assert.equal(blocks.length, 2);
+    assert.equal(blocks[1]?.source, "session");
+  });
+
+  it("queues a second command dialog instead of overlapping it", async () => {
+    const ui = new ControlledUi();
+    const { env } = makeEnv({
+      llmClient: async () => verdict("high", "DENY"),
+      ui,
+    });
+    const first = handleToolCall(bash("rm -rf a"), env);
+    await ui.nextSelect();
+    const second = handleToolCall(bash("rm -rf b"), env);
+    await tick();
+
+    assert.equal(ui.pending.length, 1, "the second command waits for the first dialog");
+    ui.answer("Allow");
+    await ui.nextSelect();
+    assert.equal(ui.pending.length, 1);
+    ui.answer("Allow");
+
+    assert.deepEqual(await first, { allow: true });
+    assert.deepEqual(await second, { allow: true });
+    assert.equal(ui.selectCalls.length, 2);
+  });
+});
+
+describe("handleToolCall — cancellation", () => {
+  it("cancels an active dialog without auditing it as a user decision", async () => {
+    const controller = new AbortController();
+    const ui = new ControlledUi();
+    const { env, dir } = makeEnv({ config: { llm: LLM_OFF }, signal: controller.signal, ui });
+
+    const pending = handleToolCall(file("/etc/hosts"), env);
+    await ui.nextSelect();
+    controller.abort();
+
+    assert.deepEqual(await pending, { allow: false, reason: CANCELLED_REASON });
+    assert.deepEqual(auditLines(dir), [], "no user block, session statement, or rule audit");
+    assert.equal(existsSync(join(dir, "project-immunity.json")), false);
+    ui.answer("Block for project"); // release the orphaned fake dialog
+  });
+
+  it("drops a queued flow when the session aborts before its turn", async () => {
+    const approvals = new ApprovalQueue();
+    const controller = new AbortController();
+    const ui = new ControlledUi();
+    const { env, dir } = makeEnv({
+      config: { llm: LLM_OFF },
+      approvals,
+      ui,
+      signal: controller.signal,
+    });
+
+    const first = handleToolCall(file("/etc/a"), env);
+    await ui.nextSelect();
+    const second = handleToolCall(file("/etc/b"), env);
+    while (approvals.pendingCount < 2) await tick();
+
+    controller.abort();
+    assert.deepEqual(await second, { allow: false, reason: CANCELLED_REASON });
+    assert.deepEqual(await first, { allow: false, reason: CANCELLED_REASON });
+    assert.equal(ui.pending.length, 1, "the queued flow never opened a dialog");
+    assert.deepEqual(auditLines(dir), []);
+    ui.answer("Allow for session"); // release the orphaned active dialog
+  });
+
+  it("does not persist a rule when the block-reason dialog is cancelled", async () => {
+    const controller = new AbortController();
+    const ui = new ControlledUi();
+    const { env, dir } = makeEnv({ config: { llm: LLM_OFF }, signal: controller.signal, ui });
+
+    const pending = handleToolCall(file("/etc/hosts"), env);
+    await ui.nextSelect();
+    ui.answer("Block for project");
+    await ui.nextSelect(); // path-kind follow-up
+    ui.answer("Just this file");
+    await ui.nextSelect(); // reason ask
+    controller.abort();
+
+    assert.deepEqual(await pending, { allow: false, reason: CANCELLED_REASON });
+    assert.equal(existsSync(join(dir, "project-immunity.json")), false, "no rule was persisted");
+    assert.deepEqual(auditLines(dir), []);
+    ui.answer("Use immunity's reasoning"); // release the orphaned fake dialog
+  });
+});
+
+describe("handleToolCall — session-wide analysis limit and status", () => {
+  it("waits for a session limiter slot before analyzing", async () => {
+    const limiter = new AnalysisLimiter(1);
+    let release!: () => void;
+    const blocker = limiter.schedule(
+      () =>
+        new Promise<VerdictResult>((resolve) => {
+          release = () => resolve(verdict("none", "ALLOWED"));
+        }),
+    );
+    let calls = 0;
+    const { env } = makeEnv({
+      limiter,
+      llmClient: async () => {
+        calls++;
+        return verdict("none", "ALLOWED");
+      },
+    });
+
+    const pending = handleToolCall(bash("ls -la"), env);
+    await tick();
+    assert.equal(calls, 0, "the analysis waits for the occupied session slot");
+
+    release();
+    assert.deepEqual(await pending, { allow: true });
+    assert.equal(calls, 1);
+    await blocker;
+  });
+
+  it("manual retries also wait for a session limiter slot", async () => {
+    const limiter = new AnalysisLimiter(1);
+    const ui = new ControlledUi();
+    let calls = 0;
+    const failed: VerdictResult = { ok: false, kind: "timeout", error: "no verdict within 30000ms" };
+    const { env } = makeEnv({
+      limiter,
+      ui,
+      llmClient: async () => (++calls === 1 ? failed : verdict("none", "ALLOWED")),
+    });
+
+    const pending = handleToolCall(bash("ls -la"), env);
+    await ui.nextSelect(); // failed analysis → Retry analysis option
+    assert.equal(calls, 1);
+
+    let release!: () => void;
+    const blocker = limiter.schedule(
+      () =>
+        new Promise<VerdictResult>((resolve) => {
+          release = () => resolve(verdict("none", "ALLOWED"));
+        }),
+    );
+    ui.answer("Retry analysis");
+    await tick();
+    assert.equal(calls, 1, "the retry waits for the occupied session slot");
+
+    release();
+    assert.deepEqual(await pending, { allow: true });
+    assert.equal(calls, 2);
+    await blocker;
+  });
+
+  it("shows the analysis status around each attempt and clears it", async () => {
+    const writes: (string | null)[] = [];
+    const { env } = makeEnv({ llmClient: async () => verdict("none", "ALLOWED") });
+    env.setStatus = (label) => writes.push(label);
+    await handleToolCall(bash("ls -la"), env);
+    assert.deepEqual(writes, ["immunity: analyzing…", null]);
   });
 });

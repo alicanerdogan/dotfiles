@@ -24,6 +24,7 @@
 import { matchRules } from "./commands.ts";
 import { evaluatePath, expandEnvRulePath, expandPath, scopeDecision, type PathEval } from "./paths.ts";
 import { requestVerdict, type Verdict, type VerdictOptions, type VerdictResult } from "./llm-client.ts";
+import type { AnalysisLimiter } from "./limiter.ts";
 import type { CommandRule, LlmConfig, PathRule, PromptWhen } from "./config.ts";
 import { SessionState } from "./session.ts";
 
@@ -102,6 +103,8 @@ export interface PipelineOptions {
   llmClient?: (command: string, opts: VerdictOptions) => Promise<VerdictResult>;
   /** verdict pre-started by the sibling batch preflight (same tool call); used instead of llmClient on the first attempt */
   prestartedVerdict?: Promise<VerdictResult>;
+  /** session-wide analyzer limiter shared by preflights, nested calls and retries */
+  limiter?: AnalysisLimiter;
   /** passed through to requestVerdict (ctx.signal) */
   signal?: AbortSignal;
 }
@@ -206,18 +209,22 @@ export async function runPipeline(req: ToolRequest, opts: PipelineOptions): Prom
   let llmFailed = false;
   if (!opts.llm.disabled) {
     const client = opts.llmClient ?? requestVerdict;
+    const analyze = () =>
+      client(req.command, {
+        piPath: opts.llm.piPath,
+        provider: opts.llm.provider,
+        model: opts.llm.model,
+        userPrompt: opts.llm.userPrompt,
+        timeoutMs: opts.llm.timeoutMs,
+        signal: opts.signal,
+        cwd: req.cwd,
+        policy: formatPolicy(opts.paths, opts.commands),
+      });
     const result = opts.prestartedVerdict
       ? await opts.prestartedVerdict
-      : await client(req.command, {
-          piPath: opts.llm.piPath,
-          provider: opts.llm.provider,
-          model: opts.llm.model,
-          userPrompt: opts.llm.userPrompt,
-          timeoutMs: opts.llm.timeoutMs,
-          signal: opts.signal,
-          cwd: req.cwd,
-          policy: formatPolicy(opts.paths, opts.commands),
-        });
+      : opts.limiter
+        ? await opts.limiter.schedule(analyze, opts.signal)
+        : await analyze();
     llmStage = { stage: "llm", result, verdict: result.ok ? result.verdict : undefined };
     stages.push(llmStage);
     if (!result.ok) llmFailed = true; // no response — the prompt may offer a manual re-run

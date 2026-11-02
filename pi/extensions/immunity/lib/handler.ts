@@ -8,14 +8,24 @@
  *   pipeline → allow: return
  *           → block:  audit + blocked event + block (silent — session
  *                     statements and promptWhen='asked' denies)
- *           → prompt: prompt:opened event, hooks.afterPrompt, decision
- *                     menu — the command first, then the suggestion step
- *                     for the analyzer's flagged paths (only after an
- *                     Allow), prompt:closed in finally; allow → decided
- *                     event, block → audit + blocked event + block. A
- *                     failed analysis adds a manual *Retry analysis*
- *                     option that loops the whole pipeline (fresh verdict
- *                     trail per attempt; uncapped, user-driven).
+ *           → prompt: enqueue the complete approval flow (dialogs never
+ *                     overlap), recheck the request with the existing
+ *                     verdict, then prompt:opened, hooks.afterPrompt,
+ *                     decision menu — the command first, then the
+ *                     suggestion step for the analyzer's flagged paths
+ *                     (only after an Allow), prompt:closed in finally;
+ *                     allow → decided event, block → audit + blocked
+ *                     event + block. A failed analysis adds a manual
+ *                     *Retry analysis* option that loops the whole
+ *                     pipeline (fresh verdict trail per attempt;
+ *                     uncapped, user-driven). An aborted flow returns a
+ *                     block without persisting rules or auditing the
+ *                     cancellation as a user decision.
+ *
+ * Concurrency: one ApprovalQueue serializes complete flows; the session's
+ * AnalysisLimiter caps analyzer calls across preflights, nested calls and
+ * retries; a refcounted StatusCounter keeps the analysis indicator visible
+ * until every concurrent analysis finishes.
  *
  * Decision menus: whole commands are a plain Allow/Deny (one-shot, no
  * rules); file paths use the six-option scope menu. Suggestions are asked
@@ -26,7 +36,16 @@
  * in-memory merged config and the scoped rule views (effective
  * immediately).
  */
-import { runPipeline, grantKey, type Suggestions, type ToolRequest } from "./pipeline.ts";
+import {
+  runPipeline,
+  grantKey,
+  type LlmStage,
+  type Outcome,
+  type PipelineOptions,
+  type PipelineResult,
+  type Suggestions,
+  type ToolRequest,
+} from "./pipeline.ts";
 import type { SessionState } from "./session.ts";
 import type { CommandRule, ImmunityConfig, PathRule } from "./config.ts";
 import { expandPath } from "./paths.ts";
@@ -37,6 +56,8 @@ import { appendAudit, blockMessage, type BlockSource } from "./audit.ts";
 import { writeRule, type RuleKind } from "./rules.ts";
 import { runPromptCommand } from "./notify.ts";
 import type { VerdictResult } from "./llm-client.ts";
+import type { ApprovalQueue } from "./queue.ts";
+import type { AnalysisLimiter } from "./limiter.ts";
 
 /** Live scoped rule views (project overrules global); index.ts keeps them in sync with the merged config. */
 export interface ScopedRuleViews {
@@ -50,6 +71,10 @@ export interface HandlerEnv {
   rules: ScopedRuleViews;
   /** in-memory session statements (six-option menu "for session" choices) */
   session: SessionState;
+  /** serializes complete approval flows so dialogs never overlap */
+  approvals: ApprovalQueue;
+  /** session-wide analyzer limiter shared by preflights, nested calls and retries */
+  limiter?: AnalysisLimiter;
   bus: Bus;
   sessionId: string;
   cwd: string;
@@ -105,6 +130,9 @@ function resolved(req: ToolRequest): string {
   return expandPath(req.target, { cwd: req.cwd, home: req.home });
 }
 
+/** Reason returned when the session aborts a queued or active approval flow. */
+export const CANCELLED_REASON = "Blocked: immunity approval cancelled";
+
 export async function handleToolCall(
   req: ToolRequest,
   env: HandlerEnv,
@@ -113,95 +141,126 @@ export async function handleToolCall(
 ): Promise<HandlerResult> {
   const { config } = env;
   const status = env.setStatus;
+  const announce = !config.llm.disabled;
   // the prestarted verdict is valid for the first attempt only — a manual
   // "Retry analysis" means a fresh verdict trail
   let prestarted = prestartedVerdict;
-  try {
-    // Each analysis attempt runs the pipeline once; a "Retry analysis"
-    // choice loops back here for a fresh attempt (user-driven, uncapped).
-    for (;;) {
-      if (status && !config.llm.disabled) status("immunity: analyzing…");
-      const r = await runPipeline(req, {
-        strict: config.strict,
-        paths: env.rules.paths,
-        commands: env.rules.commands,
-        promptWhen: config.commands.promptWhen,
-        llm: config.llm,
-        session: env.session,
-        gitIgnoreCheck: env.gitIgnoreCheck,
-        llmClient: env.llmClient,
-        prestartedVerdict: prestarted,
-        signal: env.signal,
-      });
-      prestarted = undefined;
-      const { outcome, stages } = r;
 
-      // verdict trail: one line per LLM analysis attempt, so "why did this
-      // pass?" is answerable from the audit log (ALLOWED, DENY, ASK_USER,
-      // or failure — retries included)
-      if (env.auditFile) {
-        const llmStage = stages.find((s): s is { stage: "llm"; result: VerdictResult } => s.stage === "llm");
-        if (llmStage) {
-          const res = llmStage.result;
-          appendAudit(
-            {
-              event: "verdict",
-              ts: new Date().toISOString(),
-              sessionId: env.sessionId,
-              tool: toolOf(req),
-              action: actionOf(req),
-              risk: res.ok ? res.verdict.risk : null,
-              outcome: res.ok ? res.verdict.outcome : null,
-              reason: res.ok ? res.verdict.reason : undefined,
-              suggestedPaths: res.ok ? res.verdict.paths?.blocked : undefined,
-              suggestedCommands: res.ok ? res.verdict.commands?.blocked : undefined,
-              failure: res.ok ? undefined : `${res.kind}: ${res.error}`,
-              llm: {
-                provider: config.llm.provider || undefined,
-                model: config.llm.model || undefined,
-              },
-            },
-            env.auditFile,
-          );
-        }
-      }
-
-      if (outcome.outcome === "allow") return { allow: true };
-
-      if (outcome.outcome === "block") {
-        const source: BlockSource = outcome.source;
-        if (env.auditFile) {
-          appendAudit(
-            {
-              event: "block",
-              ts: new Date().toISOString(),
-              sessionId: env.sessionId,
-              tool: toolOf(req),
-              action: actionOf(req),
-              reason: outcome.reason,
-              source,
-            },
-            env.auditFile,
-          );
-        }
-        emitBlocked(env.bus, {
-          feature: featureOf(req),
-          action: actionOf(req),
-          reason: outcome.reason,
-          block: { source },
-          context: { sessionId: env.sessionId },
-        });
-        return { allow: false, reason: blockMessage(source, outcome.reason) };
-      }
-
-      // prompt — the command decision, then the flagged-path suggestions;
-      // "Retry analysis" (failed analysis only) loops back to re-run it
-      const menu = await runMenu(req, env, outcome.reason, outcome.suggestions, outcome.llmFailed);
-      if (menu !== "retry") return menu;
+  // Each analysis attempt runs the pipeline once; a "Retry analysis"
+  // choice loops back here for a fresh attempt (user-driven, uncapped).
+  for (;;) {
+    // status is refcounted in index.ts: the first concurrent handler shows
+    // the indicator, the last one clears it.
+    if (status && announce) status("immunity: analyzing…");
+    let r: PipelineResult;
+    try {
+      r = await runPipeline(req, pipelineOptions(env, prestarted));
+    } finally {
+      if (status && announce) status(null);
     }
-  } finally {
-    if (status) status(null);
+    prestarted = undefined;
+
+    auditVerdict(req, env, r);
+    const outcome = r.outcome;
+    if (outcome.outcome === "allow") return { allow: true };
+    if (outcome.outcome === "block") return blockOutcome(req, env, outcome);
+
+    // Prompt. Complete approval flows are queued so concurrent tool calls
+    // cannot compete for the UI. Before opening a dialog, recheck the request
+    // — reusing the verdict already produced — against permissions or blocks
+    // granted while it was waiting (or between analysis and the dialog).
+    const flow = await env.approvals.run(async () => {
+      const recheck = await runPipeline(req, pipelineOptions(env, prestartedOf(r)));
+      if (recheck.outcome.outcome === "allow") return { allow: true } as HandlerResult;
+      if (recheck.outcome.outcome === "block") return blockOutcome(req, env, recheck.outcome);
+      const current = recheck.outcome;
+      return runMenu(req, env, current.reason, current.suggestions, current.llmFailed);
+    }, env.signal);
+
+    if (!flow.started) return { allow: false, reason: CANCELLED_REASON };
+    const menu = flow.result;
+    if (menu === undefined) return { allow: false, reason: CANCELLED_REASON };
+    if (menu === "retry") continue;
+    return menu;
   }
+}
+
+/** Pipeline options shared by the first attempt and a queued-flow recheck. */
+function pipelineOptions(env: HandlerEnv, prestartedVerdict?: Promise<VerdictResult>): PipelineOptions {
+  return {
+    strict: env.config.strict,
+    paths: env.rules.paths,
+    commands: env.rules.commands,
+    promptWhen: env.config.commands.promptWhen,
+    llm: env.config.llm,
+    session: env.session,
+    gitIgnoreCheck: env.gitIgnoreCheck,
+    llmClient: env.llmClient,
+    limiter: env.limiter,
+    prestartedVerdict,
+    signal: env.signal,
+  };
+}
+
+/** Reuse the verdict from the first attempt — a recheck must not analyze again. */
+function prestartedOf(result: PipelineResult): Promise<VerdictResult> | undefined {
+  const stage = result.stages.find((s): s is LlmStage => s.stage === "llm");
+  return stage ? Promise.resolve(stage.result) : undefined;
+}
+
+/** Verdict trail: one line per LLM analysis attempt (retries included). */
+function auditVerdict(req: ToolRequest, env: HandlerEnv, result: PipelineResult): void {
+  if (!env.auditFile) return;
+  const stage = result.stages.find((s): s is LlmStage => s.stage === "llm");
+  if (!stage) return;
+  const res = stage.result;
+  appendAudit(
+    {
+      event: "verdict",
+      ts: new Date().toISOString(),
+      sessionId: env.sessionId,
+      tool: toolOf(req),
+      action: actionOf(req),
+      risk: res.ok ? res.verdict.risk : null,
+      outcome: res.ok ? res.verdict.outcome : null,
+      reason: res.ok ? res.verdict.reason : undefined,
+      suggestedPaths: res.ok ? res.verdict.paths?.blocked : undefined,
+      suggestedCommands: res.ok ? res.verdict.commands?.blocked : undefined,
+      failure: res.ok ? undefined : `${res.kind}: ${res.error}`,
+      llm: {
+        provider: env.config.llm.provider || undefined,
+        model: env.config.llm.model || undefined,
+      },
+    },
+    env.auditFile,
+  );
+}
+
+/** Silent block: audit entry + blocked event + block message. */
+function blockOutcome(req: ToolRequest, env: HandlerEnv, outcome: Extract<Outcome, { outcome: "block" }>): HandlerResult {
+  const source: BlockSource = outcome.source;
+  if (env.auditFile) {
+    appendAudit(
+      {
+        event: "block",
+        ts: new Date().toISOString(),
+        sessionId: env.sessionId,
+        tool: toolOf(req),
+        action: actionOf(req),
+        reason: outcome.reason,
+        source,
+      },
+      env.auditFile,
+    );
+  }
+  emitBlocked(env.bus, {
+    feature: featureOf(req),
+    action: actionOf(req),
+    reason: outcome.reason,
+    block: { source },
+    context: { sessionId: env.sessionId },
+  });
+  return { allow: false, reason: blockMessage(source, outcome.reason) };
 }
 
 async function runMenu(
@@ -241,7 +300,8 @@ async function runMenu(
      * asked once execution is allowed. When the analysis failed, a manual
      * *Retry analysis* option loops back to re-run it. */
     if (req.kind === "bash") {
-      const result = await runCommandPrompt({ ui: env.ui, reason, retryable: llmFailed });
+      const result = await runCommandPrompt({ ui: env.ui, reason, retryable: llmFailed, signal: env.signal });
+      if (result.action === "cancel") return { allow: false, reason: CANCELLED_REASON };
       if (result.action === "retry") return "retry";
       if (result.action === "block") {
         // user denied the command — one-shot; no rule, no session statement
@@ -277,6 +337,7 @@ async function runMenu(
           session: env.session,
           saveRule: saveRuleImpl,
           pathKindFor: env.pathKindFor,
+          signal: env.signal,
         });
         for (const choice of sug.choices) auditSuggestionChoice(req, env, choice);
       }
@@ -293,7 +354,11 @@ async function runMenu(
       saveRule: saveRuleImpl,
       path,
       pathKind: env.pathKindFor?.(path) ?? "file",
+      signal: env.signal,
     });
+
+    // a cancelled dialog is not a user decision — nothing to audit or emit
+    if (result.cancelled) return { allow: false, reason: CANCELLED_REASON };
 
     // audit the choice + emit the decided event
     if (env.auditFile) {

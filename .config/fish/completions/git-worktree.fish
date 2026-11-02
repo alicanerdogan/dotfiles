@@ -6,13 +6,16 @@ function __git_worktree_list_names
     set -l any_root (git rev-parse --show-toplevel 2>/dev/null)
     or return
 
-    set -l main_repo (git -C "$any_root" worktree list --porcelain 2>/dev/null | string match -r '^worktree (.+)' | string replace 'worktree ' '' | head -n 1)
+    set -l main_repo (git -C "$any_root" worktree list --porcelain 2>/dev/null | string match -rg '^worktree (.+)' | head -n 1)
     or return
 
     set -l base_name (basename "$main_repo" | string replace -r '@[^@]*$' '')
 
-    set -l paths (git -C "$any_root" worktree list --porcelain 2>/dev/null | string match -r '^worktree (.+)' | string replace 'worktree ' '')
-    for path in $paths[2..-1]
+    set -l paths (git -C "$any_root" worktree list --porcelain 2>/dev/null | string match -rg '^worktree (.+)')
+    for path in $paths
+        if test "$path" = "$main_repo"
+            continue
+        end
         set -l name (basename "$path")
         if string match -q "$base_name@*" -- "$name"
             string replace -r "^$base_name@" '' -- "$name"

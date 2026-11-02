@@ -257,18 +257,16 @@ function set_env_vars
     set -x PKG_CONFIG_PATH "$HOMEBREW_DIR/opt/libffi/lib/pkgconfig:$HOMEBREW_DIR/opt/expat/lib/pkgconfig:$HOMEBREW_DIR/opt/zlib/lib/pkgconfig"
     set -gx XDG_CONFIG_HOME "$HOME/.config"
 
-    set -x PATH $HOMEBREW_DIR/bin $PATH
-    set -x PATH $HOMEBREW_DIR/opt/openjdk/bin $PATH
-    set -x PATH "$HOME/.cargo/bin" $PATH
-    set -x PATH $HOMEBREW_DIR/opt/rustup/bin $PATH
-    set -x PATH "$HOME/.config/fish/bin" $PATH
-    set -x PATH "$HOME/.local/bin" $PATH
+    fish_add_path --path "$HOMEBREW_DIR/bin"
+    fish_add_path --path "$HOMEBREW_DIR/opt/openjdk/bin"
+    fish_add_path --path "$HOME/.cargo/bin"
+    fish_add_path --path "$HOMEBREW_DIR/opt/rustup/bin"
+    fish_add_path --path "$HOME/.config/fish/bin"
+    fish_add_path --path "$HOME/.local/bin"
 
     # pnpm
-    set -gx PNPM_HOME "~/Library/pnpm"
-    if not string match -q -- $PNPM_HOME $PATH
-        set -gx PATH "$PNPM_HOME" $PATH
-    end
+    set -gx PNPM_HOME "$HOME/Library/pnpm"
+    fish_add_path --path "$PNPM_HOME/bin"
     # pnpm end
 end
 

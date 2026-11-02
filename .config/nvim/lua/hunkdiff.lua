@@ -18,6 +18,9 @@ local OPTS = {
 
 -- singleton state
 local S = {}
+-- Monotonic token: increments on close and open so async callbacks from a
+-- previous viewer (or a previous file) cannot mutate the current one.
+local generation = 0
 
 local function reset_state()
   S = {
@@ -125,12 +128,18 @@ end
 -- reload the live session's diff to a single file (pathspec), then optionally
 -- run `cb`. Uses the same common options as the initial launch so the panel's
 -- chrome and --watch live-update behavior survive a file switch.
+local reload_seq = 0
 local function reload_session(rel, cb)
   if not S.session_id then return end
+  local gen = generation
+  local seq = reload_seq + 1
+  reload_seq = seq
   local argv = { OPTS.hunk, 'session', 'reload', S.session_id, '--' }
   for _, a in ipairs(build_diff_cmd(rel)) do table.insert(argv, a) end
   vim.system(argv, { text = true }, function(out)
     vim.schedule(function()
+      -- viewer closed/reopened, or a newer reload superseded this one
+      if gen ~= generation or seq ~= reload_seq then return end
       if out.code ~= 0 then
         -- surface failures: a persistent reload error would otherwise make the
         -- panel silently never update. The viewer stays usable.
@@ -168,11 +177,12 @@ end
 
 -- ── session discovery ─────────────────────────────────────────────────────────
 
-local function list_sessions(cb)
+local function list_sessions(gen, cb)
   vim.system({ OPTS.hunk, 'session', 'list', '--json' }, { text = true }, function(out)
     -- on_exit runs in a fast event context; defer the consumer callback to the
     -- main loop so it may freely call nvim_* API, vim.fn, vim.bo, termopen, etc.
     vim.schedule(function()
+      if gen ~= generation then return end
       if out.code ~= 0 then cb(nil) return end
       local ok, d = pcall(vim.json.decode, out.stdout or '')
       if not ok or not d then cb({}) return end
@@ -192,13 +202,14 @@ local function session_match(s)
   return false
 end
 
-local function discover_session()
-  if S.session_id then return end
+local function discover_session(gen)
+  if gen ~= generation or S.session_id then return end
   local elapsed = 0
 
   local function step()
-    list_sessions(function(sessions)
-      if not S.buf or S.session_id then return end -- viewer closed/session found
+    if gen ~= generation then return end
+    list_sessions(gen, function(sessions)
+      if gen ~= generation or not S.buf or S.session_id then return end -- viewer closed/session found
       local new_ones = {}
       for _, s in ipairs(sessions or {}) do
         local id = session_id_of(s)
@@ -229,8 +240,12 @@ end
 
 -- ── close ────────────────────────────────────────────────────────────────────
 
-local function close_viewer()
+local function close_viewer(opts)
+  opts = opts or {}
+  local shutdown = opts.shutdown or (vim.v.exiting ~= nil and vim.v.exiting ~= 0)
   S.closing = true -- guard against re-entrant TermClose from jobstop below
+  -- invalidate any discovery/reload callback still in flight
+  generation = generation + 1
   if S.follow_timer and not S.follow_timer:is_closing() then S.follow_timer:close() end
   if S.discover_timer and not S.discover_timer:is_closing() then S.discover_timer:close() end
   if S.chan then
@@ -238,21 +253,30 @@ local function close_viewer()
     -- binary as a child; jobstop() signals only the wrapper, which does not
     -- forward the signal — orphaning the session process and its daemon
     -- registration. Terminal jobs are process-group leaders (setsid for the
-    -- pty), so TERM the whole process group, then jobstop to reap the job.
-    -- jobpid errors with E900 once the job has exited (e.g. TermClose path)
+    -- pty), so TERM the whole process group through libuv, then jobstop to
+    -- reap the job. jobpid errors with E900 once the job has exited.
     local ok, pid = pcall(vim.fn.jobpid, S.chan)
     if ok and pid > 0 then
-      vim.system({ 'kill', '-TERM', '--', '-' .. pid })
+      pcall(vim.uv.kill, -pid, 'sigterm')
     end
     pcall(vim.fn.jobstop, S.chan)
   end
-  if viewer_visible() then vim.api.nvim_win_close(S.win, true) end
-  if S.buf and vim.api.nvim_buf_is_valid(S.buf) then
-    vim.api.nvim_buf_delete(S.buf, { force = true })
+  if not shutdown then
+    if viewer_visible() then pcall(vim.api.nvim_win_close, S.win, true) end
+    if S.buf and vim.api.nvim_buf_is_valid(S.buf) then
+      pcall(vim.api.nvim_buf_delete, S.buf, { force = true })
+    end
+    vim.api.nvim_clear_autocmds({ group = AUGROUP })
   end
-  vim.api.nvim_clear_autocmds({ group = AUGROUP })
   reset_state()
 end
+
+-- Neovim is tearing down its windows and buffers; only stop the viewer's
+-- process group, never touch the window/buffer tree from here.
+vim.api.nvim_create_autocmd('VimLeavePre', {
+  group = vim.api.nvim_create_augroup('HunkDiffShutdown', { clear = true }),
+  callback = function() close_viewer({ shutdown = true }) end,
+})
 
 -- ── source autocmds (only while viewer visible) ──────────────────────────────
 
@@ -384,6 +408,8 @@ local function open_viewer()
   S.source_buf = src_buf
   S.last_follow_sig = nil
   S.last_file = rel
+  generation = generation + 1
+  local gen = generation
 
   -- create the hunk-diff buffer (read-only terminal surface)
   local buf = vim.api.nvim_create_buf(false, true)
@@ -403,8 +429,8 @@ local function open_viewer()
   apply_window_options(win, file)
 
   -- record the live session ids before the launch so we can isolate the new one
-  list_sessions(function(sessions)
-    if S.buf ~= buf then return end -- closed meanwhile
+  list_sessions(gen, function(sessions)
+    if gen ~= generation or S.buf ~= buf then return end -- closed meanwhile
     S.baseline_ids = {}
     for _, s in ipairs(sessions or {}) do
       local id = session_id_of(s)
@@ -429,7 +455,7 @@ local function open_viewer()
     S.chan = chan
     setup_terminal_mappings(buf)
     setup_source_autocmds()
-    discover_session()
+    discover_session(gen)
   end)
 end
 

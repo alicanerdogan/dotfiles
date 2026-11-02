@@ -277,26 +277,52 @@ local function export()
 end
 
 -- Parse `git diff` into changed files and the start line of each hunk.
--- Sorted the way `ls` lists paths (case-insensitive), which differs from
--- git's byte-wise ordering (e.g. `lua/B.lua` comes after `lua/a.lua`).
+-- Working-tree navigation uses the new-side hunk line and destination path;
+-- deleted files are skipped. Explicit prefixes and color settings keep user
+-- diff config from breaking the parser. Untracked files are appended as
+-- file-level entries so they show up in the review lists.
 local function diff_entries()
-  local out = vim.fn.system('git diff --no-ext-diff --unified=0')
-  if vim.v.shell_error ~= 0 or out == '' then return nil end
+  local root = git_root()
+  if not root then return nil end
+
+  local out = vim.fn.system({
+    'git', '-C', root, '-c', 'color.ui=false',
+    'diff', '--no-ext-diff', '--no-color',
+    '--src-prefix=a/', '--dst-prefix=b/',
+    '--unified=0',
+  })
+  if vim.v.shell_error ~= 0 then return nil end
 
   local entries = {}
   local file = nil
-  for line in out:gmatch('[^\n]+') do
-    -- Match --- a/filename (default prefix) or --- filename (noprefix)
-    local f = line:match('^%-%-%- a/(.+)') or line:match('^%-%-%- (.+)')
-    if f then
-      file = f
+  for line in (out or ''):gmatch('[^\n]+') do
+    -- +++ b/filename is the destination path; /dev/null means deleted
+    local dst = line:match('^%+%+%+ b/(.+)') or line:match('^%+%+%+ (.+)')
+    if dst then
+      if dst == '/dev/null' then
+        file = nil
+      else
+        file = dst
+      end
     elseif file then
-      local lnum = line:match('^@@ %-(%d+)')
+      -- use the new-side line: @@ -old,count +new,count @@
+      local _, _, lnum = line:match('^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@')
       if lnum then
-        table.insert(entries, { file = file, lnum = tonumber(lnum), header = line })
+        table.insert(entries, { file = file, lnum = math.max(1, tonumber(lnum)), header = line })
       end
     end
   end
+
+  local untracked = vim.fn.systemlist({ 'git', '-C', root, 'ls-files', '--others', '--exclude-standard' })
+  if vim.v.shell_error == 0 then
+    for _, path in ipairs(untracked) do
+      if path ~= '' then
+        table.insert(entries, { file = path, lnum = 1, header = 'untracked file' })
+      end
+    end
+  end
+
+  if #entries == 0 then return nil end
 
   table.sort(entries, function(a, b)
     local af, bf = a.file:lower(), b.file:lower()
@@ -316,8 +342,10 @@ local function hunks()
   end
 
   local qf = {}
+  local root = git_root()
+  if not root then return end
   for _, e in ipairs(entries) do
-    table.insert(qf, { filename = e.file, lnum = e.lnum, text = e.header })
+    table.insert(qf, { filename = root .. '/' .. e.file, lnum = e.lnum, text = e.header })
   end
 
   if #qf == 0 then
@@ -337,11 +365,13 @@ local function files()
   end
 
   local qf = {}
+  local root = git_root()
+  if not root then return end
   local seen = {}
   for _, e in ipairs(entries) do
     if not seen[e.file] then
       seen[e.file] = true
-      table.insert(qf, { filename = e.file, lnum = e.lnum, text = e.file })
+      table.insert(qf, { filename = root .. '/' .. e.file, lnum = e.lnum, text = e.file })
     end
   end
 

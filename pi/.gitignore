@@ -2,8 +2,8 @@
 sessions/
 auth.json
 models-store.json
-mcp-cache.json
-mcp-npx-cache.json
+mcp-auth.json
+mcp.log*
 trust.json
 .pi/
 git/

@@ -1,5 +1,5 @@
 {
-  "lastChangelogVersion": "0.87.0",
+  "lastChangelogVersion": "1.4.0",
   "defaultProvider": "opencode-go",
   "defaultModel": "deepseek-v4.1-flash",
   "defaultThinkingLevel": "high",
@@ -9,6 +9,16 @@
   "skills": [
     "local/skills"
   ],
-  "hideThinkingBlock": false,
-  "theme": "dark"
+  "prompts": [
+    "local/prompts"
+  ],
+  "defaultTools": [
+    "+codemode"
+  ],
+  "hideThinkingBlock": true,
+  "treeFilterMode": "user-only",
+  "theme": "light/dark",
+  "tuiMode": "fullscreen",
+  "enableInstallTelemetry": false,
+  "httpIdleTimeoutMs": 90000
 }

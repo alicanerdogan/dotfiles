@@ -469,11 +469,31 @@ describe("handleToolCall — hooks", () => {
 });
 
 /** UI fake whose dialogs stay open until the test answers them. */
+interface PendingSelect {
+  title: string;
+  options: string[];
+  opts?: { signal?: AbortSignal };
+  resolve: (value: string | undefined) => void;
+}
+
 class ControlledUi extends FakeUi {
-  pending: { title: string; options: string[]; resolve: (value: string | undefined) => void }[] = [];
-  override select(title: string, options: string[]): Promise<string | undefined> {
-    this.selectCalls.push({ title, options });
-    return new Promise<string | undefined>((resolve) => this.pending.push({ title, options, resolve }));
+  pending: PendingSelect[] = [];
+  override select(title: string, options: string[], opts?: { signal?: AbortSignal }): Promise<string | undefined> {
+    this.selectCalls.push({ title, options, opts });
+    return new Promise<string | undefined>((resolve) => {
+      const entry: PendingSelect = { title, options, opts, resolve };
+      this.pending.push(entry);
+      // pi dismisses dialogs when the signal aborts; mirror that here.
+      opts?.signal?.addEventListener(
+        "abort",
+        () => {
+          const index = this.pending.indexOf(entry);
+          if (index >= 0) this.pending.splice(index, 1);
+          resolve(undefined);
+        },
+        { once: true },
+      );
+    });
   }
   answer(value: string | undefined): void {
     const next = this.pending.shift();
@@ -481,7 +501,7 @@ class ControlledUi extends FakeUi {
     next.resolve(value);
   }
   /** Wait until a dialog is open, then return its title/options. */
-  async nextSelect(): Promise<{ title: string; options: string[] }> {
+  async nextSelect(): Promise<PendingSelect> {
     while (this.pending.length === 0) await new Promise((r) => setImmediate(r));
     return this.pending[0];
   }
@@ -567,12 +587,13 @@ describe("handleToolCall — cancellation", () => {
 
     const pending = handleToolCall(file("/etc/hosts"), env);
     await ui.nextSelect();
+    assert.equal(ui.pending[0].opts?.signal, controller.signal, "the dialog receives the abort signal");
     controller.abort();
 
     assert.deepEqual(await pending, { allow: false, reason: CANCELLED_REASON });
     assert.deepEqual(auditLines(dir), [], "no user block, session statement, or rule audit");
     assert.equal(existsSync(join(dir, "project-immunity.json")), false);
-    ui.answer("Block for project"); // release the orphaned fake dialog
+    assert.equal(ui.pending.length, 0, "the active dialog was dismissed");
   });
 
   it("drops a queued flow when the session aborts before its turn", async () => {
@@ -594,9 +615,8 @@ describe("handleToolCall — cancellation", () => {
     controller.abort();
     assert.deepEqual(await second, { allow: false, reason: CANCELLED_REASON });
     assert.deepEqual(await first, { allow: false, reason: CANCELLED_REASON });
-    assert.equal(ui.pending.length, 1, "the queued flow never opened a dialog");
+    assert.equal(ui.pending.length, 0, "no dialog was left open");
     assert.deepEqual(auditLines(dir), []);
-    ui.answer("Allow for session"); // release the orphaned active dialog
   });
 
   it("does not persist a rule when the block-reason dialog is cancelled", async () => {
@@ -615,7 +635,28 @@ describe("handleToolCall — cancellation", () => {
     assert.deepEqual(await pending, { allow: false, reason: CANCELLED_REASON });
     assert.equal(existsSync(join(dir, "project-immunity.json")), false, "no rule was persisted");
     assert.deepEqual(auditLines(dir), []);
-    ui.answer("Use immunity's reasoning"); // release the orphaned fake dialog
+  });
+
+  it("blocks when the suggestion dialog is cancelled", async () => {
+    const controller = new AbortController();
+    const ui = new ControlledUi();
+    const { env } = makeEnv({
+      signal: controller.signal,
+      ui,
+      llmClient: async () => ({
+        ok: true,
+        verdict: { risk: "high", outcome: "DENY", paths: { blocked: ["/Users/alican/repos"] } },
+      }),
+    });
+
+    const pending = handleToolCall(bash("find ~/repos -maxdepth 1 -type d | wc -l"), env);
+    await ui.nextSelect(); // command decision
+    ui.answer("Allow");
+    await ui.nextSelect(); // flagged-path suggestion
+    controller.abort();
+
+    assert.deepEqual(await pending, { allow: false, reason: CANCELLED_REASON });
+    assert.equal(ui.pending.length, 0, "the suggestion dialog was dismissed");
   });
 });
 

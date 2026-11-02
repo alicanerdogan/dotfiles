@@ -24,9 +24,14 @@ import type { SessionState } from "./session.ts";
 import type { RuleKind } from "./rules.ts";
 import type { Suggestions } from "./pipeline.ts";
 
+export interface DialogOptions {
+  /** pi dismisses the dialog when this signal aborts */
+  signal?: AbortSignal;
+}
+
 export interface PromptUi {
-  select(title: string, options: string[]): Promise<string | undefined>;
-  input(title: string, placeholder?: string): Promise<string | undefined>;
+  select(title: string, options: string[], opts?: DialogOptions): Promise<string | undefined>;
+  input(title: string, placeholder?: string, opts?: DialogOptions): Promise<string | undefined>;
 }
 
 export type MenuScope = "session" | "project" | "global";
@@ -99,7 +104,7 @@ function raceAbort<T>(p: Promise<T>, signal?: AbortSignal): Promise<T | typeof C
     p.then(
       (value) => {
         cleanup();
-        resolve(value);
+        resolve(signal.aborted ? CANCELLED : value);
       },
       (err) => {
         cleanup();
@@ -118,8 +123,8 @@ interface ChoiceResult {
 async function choose(ui: PromptUi, title: string, options: string[], signal?: AbortSignal): Promise<ChoiceResult> {
   if (signal?.aborted) return { cancelled: true, failed: false };
   try {
-    const choice = await raceAbort(ui.select(title, options), signal);
-    if (choice === CANCELLED) return { cancelled: true, failed: false };
+    const choice = await raceAbort(ui.select(title, options, signal ? { signal } : undefined), signal);
+    if (choice === CANCELLED || signal?.aborted) return { cancelled: true, failed: false };
     return { choice, cancelled: false, failed: false };
   } catch {
     return { cancelled: false, failed: true };
@@ -129,8 +134,8 @@ async function choose(ui: PromptUi, title: string, options: string[], signal?: A
 async function askInput(ui: PromptUi, title: string, signal?: AbortSignal): Promise<{ value?: string; cancelled: boolean }> {
   if (signal?.aborted) return { cancelled: true };
   try {
-    const value = await raceAbort(ui.input(title), signal);
-    if (value === CANCELLED) return { cancelled: true };
+    const value = await raceAbort(ui.input(title, undefined, signal ? { signal } : undefined), signal);
+    if (value === CANCELLED || signal?.aborted) return { cancelled: true };
     return { value, cancelled: false };
   } catch {
     return { cancelled: false };

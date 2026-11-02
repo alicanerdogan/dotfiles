@@ -316,3 +316,41 @@ describe("runPromptFlow — safety on broken prompts", () => {
     assert.equal(r.userReason, undefined);
   });
 });
+
+describe("dialog cancellation", () => {
+  it("passes the abort signal to select", async () => {
+    const ac = new AbortController();
+    const ui = new FakeUi();
+    ui.selects.push("Allow");
+    await runCommandPrompt({ ui, reason: "x", signal: ac.signal });
+    assert.equal(ui.selectCalls[0].opts?.signal, ac.signal);
+  });
+
+  it("passes the abort signal to the reason input", async () => {
+    const ac = new AbortController();
+    const { opts, ui } = flow({ command: "x", signal: ac.signal });
+    ui.selects.push("Block for project", "Provide your reasoning");
+    ui.inputs.push("because");
+    const r = await runPromptFlow(opts);
+    assert.equal(r.action, "block");
+    assert.equal(ui.selectCalls[0].opts?.signal, ac.signal);
+    assert.equal(ui.selectCalls[1].opts?.signal, ac.signal);
+    assert.equal(ui.inputCalls[0].opts?.signal, ac.signal);
+  });
+
+  it("treats a dialog dismissed by abort as cancelled, not a user dismissal", async () => {
+    const ac = new AbortController();
+    const ui = new FakeUi();
+    // pi dismisses with undefined when the dialog's signal aborts
+    ui.select = async (title: string, options: string[], opts?: { signal?: AbortSignal }) => {
+      ui.selectCalls.push({ title, options, opts });
+      return new Promise<string | undefined>((resolve) => {
+        opts?.signal?.addEventListener("abort", () => resolve(undefined), { once: true });
+      });
+    };
+    const pending = runCommandPrompt({ ui, reason: "x", signal: ac.signal });
+    await new Promise((r) => setImmediate(r));
+    ac.abort();
+    assert.deepEqual(await pending, { action: "cancel" });
+  });
+});

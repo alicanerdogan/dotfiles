@@ -6,8 +6,8 @@
 
 /** Scripted UI fake: `selects`/`inputs` are consumed in order; undefined = dismissed. */
 export class FakeUi {
-  selectCalls: { title: string; options: string[] }[] = [];
-  inputCalls: { title: string; placeholder?: string }[] = [];
+  selectCalls: { title: string; options: string[]; opts?: { signal?: AbortSignal } }[] = [];
+  inputCalls: { title: string; placeholder?: string; opts?: { signal?: AbortSignal } }[] = [];
   notifyCalls: { message: string; type?: string }[] = [];
   private selects: (string | undefined)[];
   private inputs: (string | undefined)[];
@@ -19,13 +19,13 @@ export class FakeUi {
   failNext(kind: "select" | "input"): void {
     this.fail = kind;
   }
-  async select(title: string, options: string[]): Promise<string | undefined> {
-    this.selectCalls.push({ title, options });
+  async select(title: string, options: string[], opts?: { signal?: AbortSignal }): Promise<string | undefined> {
+    this.selectCalls.push({ title, options, opts });
     if (this.fail === "select") throw new Error("ui failed");
     return this.selects.shift();
   }
-  async input(title: string, placeholder?: string): Promise<string | undefined> {
-    this.inputCalls.push({ title, placeholder });
+  async input(title: string, placeholder?: string, opts?: { signal?: AbortSignal }): Promise<string | undefined> {
+    this.inputCalls.push({ title, placeholder, opts });
     if (this.fail === "input") throw new Error("ui failed");
     return this.inputs.shift();
   }

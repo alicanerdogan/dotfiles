@@ -340,6 +340,7 @@ async function runMenu(
           signal: env.signal,
         });
         for (const choice of sug.choices) auditSuggestionChoice(req, env, choice);
+        if (sug.cancelled) return { allow: false, reason: CANCELLED_REASON };
       }
       return { allow: true };
     }

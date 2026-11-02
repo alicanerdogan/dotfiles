@@ -2,7 +2,7 @@ auto-update         = download
 auto-update-channel = stable
 
 theme       = light:kanso-pearl,dark:kanso-zen
-font-family = JetBrainsMono Nerd Font Mono
+font-family = Lilex
 font-size   = 15
 font-style  = Regular
 font-style-bold = Bold
@@ -11,6 +11,7 @@ font-style-bold-italic = Bold Italic
 font-thicken = false
 
 mouse-hide-while-typing = true
+macos-option-as-alt = true
 clipboard-read = allow
 copy-on-select = true
 cursor-style = block
@@ -70,3 +71,42 @@ keybind = ctrl+f>enter=toggle_split_zoom
 keybind = ctrl+f>/=write_screen_file:paste
 
 keybind = shift+enter=text:\n
+# Vim-style navigation mode (alt+v)
+
+keybind = alt+v=activate_key_table:vim
+keybind = vim/
+
+# Unbound keys are swallowed while the table is active
+keybind = vim/catch_all=ignore
+
+# Scroll one line
+keybind = vim/j=scroll_page_lines:1
+keybind = vim/k=scroll_page_lines:-1
+
+# Scroll one page
+keybind = vim/ctrl+d=scroll_page_down
+keybind = vim/ctrl+f=scroll_page_down
+keybind = vim/shift+j=scroll_page_down
+keybind = vim/ctrl+u=scroll_page_up
+keybind = vim/ctrl+b=scroll_page_up
+keybind = vim/shift+k=scroll_page_up
+
+# Jump to the top/bottom of scrollback
+keybind = vim/g>g=scroll_to_top
+keybind = vim/shift+g=scroll_to_bottom
+
+# Search
+keybind = vim/slash=start_search
+keybind = vim/n=navigate_search:next
+
+# Copy the current selection
+keybind = vim/v=copy_to_clipboard:plain
+keybind = vim/y=copy_to_clipboard:plain
+
+# Command palette
+keybind = vim/shift+semicolon=toggle_command_palette
+
+# Leave vim mode
+keybind = vim/escape=deactivate_key_table
+keybind = vim/q=deactivate_key_table
+keybind = vim/i=deactivate_key_table

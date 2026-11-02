@@ -142,9 +142,14 @@ export async function handleToolCall(
   const { config } = env;
   const status = env.setStatus;
   const announce = !config.llm.disabled;
+  const aborted = () => env.signal?.aborted === true;
+  const cancelled = (): HandlerResult => ({ allow: false, reason: CANCELLED_REASON });
   // the prestarted verdict is valid for the first attempt only — a manual
   // "Retry analysis" means a fresh verdict trail
   let prestarted = prestartedVerdict;
+
+  // An already-aborted call must not slip through a session/rule allow.
+  if (aborted()) return cancelled();
 
   // Each analysis attempt runs the pipeline once; a "Retry analysis"
   // choice loops back here for a fresh attempt (user-driven, uncapped).
@@ -161,6 +166,8 @@ export async function handleToolCall(
     prestarted = undefined;
 
     auditVerdict(req, env, r);
+    // an abort can land while the analyzer is settling
+    if (aborted()) return cancelled();
     const outcome = r.outcome;
     if (outcome.outcome === "allow") return { allow: true };
     if (outcome.outcome === "block") return blockOutcome(req, env, outcome);
@@ -171,15 +178,17 @@ export async function handleToolCall(
     // granted while it was waiting (or between analysis and the dialog).
     const flow = await env.approvals.run(async () => {
       const recheck = await runPipeline(req, pipelineOptions(env, prestartedOf(r)));
+      if (aborted()) return cancelled();
       if (recheck.outcome.outcome === "allow") return { allow: true } as HandlerResult;
       if (recheck.outcome.outcome === "block") return blockOutcome(req, env, recheck.outcome);
       const current = recheck.outcome;
       return runMenu(req, env, current.reason, current.suggestions, current.llmFailed);
     }, env.signal);
 
-    if (!flow.started) return { allow: false, reason: CANCELLED_REASON };
+    if (!flow.started) return cancelled();
     const menu = flow.result;
-    if (menu === undefined) return { allow: false, reason: CANCELLED_REASON };
+    if (menu === undefined) return cancelled();
+    if (aborted()) return cancelled();
     if (menu === "retry") continue;
     return menu;
   }

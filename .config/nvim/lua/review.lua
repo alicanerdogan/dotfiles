@@ -276,6 +276,43 @@ local function export()
   vim.notify('Review: ' .. #comments .. ' comment(s) copied as Markdown', vim.log.levels.INFO)
 end
 
+-- Decode Git's C-style quoted path. Git quotes filenames containing
+-- non-ASCII bytes, tabs, newlines, quotes, or backslashes; octal escapes
+-- represent arbitrary bytes (including UTF-8 sequences).
+local function unquote_git_path(path)
+  if not (path:sub(1, 1) == '"' and path:sub(-1) == '"') then return path end
+  local inner = path:sub(2, -2)
+  local out = {}
+  local i = 1
+  while i <= #inner do
+    local c = inner:sub(i, i)
+    if c ~= '\\' then
+      out[#out + 1] = c
+      i = i + 1
+    else
+      local n = inner:sub(i + 1, i + 1)
+      if n == 'a' then out[#out + 1] = '\a'; i = i + 2
+      elseif n == 'b' then out[#out + 1] = '\b'; i = i + 2
+      elseif n == 't' then out[#out + 1] = '\t'; i = i + 2
+      elseif n == 'n' then out[#out + 1] = '\n'; i = i + 2
+      elseif n == 'v' then out[#out + 1] = '\v'; i = i + 2
+      elseif n == 'f' then out[#out + 1] = '\f'; i = i + 2
+      elseif n == 'r' then out[#out + 1] = '\r'; i = i + 2
+      elseif n == '"' then out[#out + 1] = '"'; i = i + 2
+      elseif n == '\\' then out[#out + 1] = '\\'; i = i + 2
+      elseif n:match('[0-7]') then
+        local oct = inner:sub(i + 1, i + 3):match('^[0-7]+')
+        out[#out + 1] = string.char(tonumber(oct, 8) % 256)
+        i = i + 1 + #oct
+      else
+        out[#out + 1] = n -- unknown escape: keep the escaped character
+        i = i + 2
+      end
+    end
+  end
+  return table.concat(out)
+end
+
 -- Parse `git diff` into changed files and the start line of each hunk.
 -- Working-tree navigation uses the new-side hunk line and destination path;
 -- deleted files are skipped. Explicit prefixes and color settings keep user
@@ -286,7 +323,7 @@ local function diff_entries()
   if not root then return nil end
 
   local out = vim.fn.system({
-    'git', '-C', root, '-c', 'color.ui=false',
+    'git', '-C', root, '-c', 'color.ui=false', '-c', 'core.quotePath=false',
     'diff', '--no-ext-diff', '--no-color',
     '--src-prefix=a/', '--dst-prefix=b/',
     '--unified=0',
@@ -295,30 +332,49 @@ local function diff_entries()
 
   local entries = {}
   local file = nil
+  local in_hunks = false
   for line in (out or ''):gmatch('[^\n]+') do
-    -- +++ b/filename is the destination path; /dev/null means deleted
-    local dst = line:match('^%+%+%+ b/(.+)') or line:match('^%+%+%+ (.+)')
-    if dst then
-      if dst == '/dev/null' then
-        file = nil
-      else
-        file = dst
+    -- A new file section resets the metadata phase. +++ headers are only
+    -- trusted there; once hunks start, an added "++ b/..." line renders as
+    -- "+++ b/..." and must not be mistaken for another file header.
+    if line:match('^diff %-%-git ') then
+      file = nil
+      in_hunks = false
+    elseif not in_hunks then
+      local raw = line:match('^%+%+%+ (.+)')
+      if raw then
+        -- Git appends a tab to headers whose filename contains spaces,
+        -- including quoted headers. A tab that belongs to the filename is
+        -- escaped inside the quotes, so stripping one trailing tab is safe.
+        if raw:sub(-1) == '\t' then
+          raw = raw:sub(1, -2)
+        end
+        local dst = unquote_git_path(raw)
+        if dst:sub(1, 2) == 'b/' then dst = dst:sub(3) end
+        if dst == '/dev/null' then
+          file = nil
+        else
+          file = dst
+        end
       end
-    elseif file then
-      -- use the new-side line: @@ -old,count +new,count @@
-      local _, _, lnum = line:match('^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@')
-      if lnum then
-        table.insert(entries, { file = file, lnum = math.max(1, tonumber(lnum)), header = line })
+    end
+
+    if line:match('^@@') then
+      if file then
+        -- use the new-side line: @@ -old,count +new,count @@
+        local _, _, lnum = line:match('^@@ %-(%d+),?(%d*) %+(%d+),?(%d*) @@')
+        if lnum then
+          table.insert(entries, { file = file, lnum = math.max(1, tonumber(lnum)), header = line })
+        end
       end
+      in_hunks = true
     end
   end
 
-  local untracked = vim.fn.systemlist({ 'git', '-C', root, 'ls-files', '--others', '--exclude-standard' })
-  if vim.v.shell_error == 0 then
-    for _, path in ipairs(untracked) do
-      if path ~= '' then
-        table.insert(entries, { file = path, lnum = 1, header = 'untracked file' })
-      end
+  local untracked = vim.system({ 'git', '-C', root, 'ls-files', '-z', '--others', '--exclude-standard' }):wait()
+  if untracked.code == 0 then
+    for path in (untracked.stdout or ''):gmatch('([^%z]+)') do
+      table.insert(entries, { file = path, lnum = 1, header = 'untracked file' })
     end
   end
 

@@ -36,6 +36,7 @@ local function reset_state()
     discover_timer = nil,
     last_follow_sig = nil,
     last_file = nil,      -- repo-relative path of the file currently reviewed
+    requested_file = nil, -- repo-relative path the viewer is switching to (reload in flight)
     closing = false,
   }
 end
@@ -132,6 +133,7 @@ local reload_seq = 0
 local function reload_session(rel, cb)
   if not S.session_id then return end
   local gen = generation
+  S.requested_file = rel
   local seq = reload_seq + 1
   reload_seq = seq
   local argv = { OPTS.hunk, 'session', 'reload', S.session_id, '--' }
@@ -141,8 +143,8 @@ local function reload_session(rel, cb)
       -- viewer closed/reopened, or a newer reload superseded this one
       if gen ~= generation or seq ~= reload_seq then return end
       if out.code ~= 0 then
-        -- surface failures: a persistent reload error would otherwise make the
-        -- panel silently never update. The viewer stays usable.
+        -- allow the next BufEnter to retry; the viewer stays usable
+        S.requested_file = nil
         notify('reload failed: ' .. vim.trim(out.stderr or out.stdout or ''),
           vim.log.levels.ERROR)
         return
@@ -168,7 +170,7 @@ local function review_current_buffer()
     set_winbar(S.win, vim.api.nvim_buf_get_name(buf))
   end
   local rel = repo_relative(vim.api.nvim_buf_get_name(buf), S.repo)
-  if rel and rel ~= '' and S.last_file ~= rel then
+  if rel and rel ~= '' and S.requested_file ~= rel then
     reload_session(rel, function() navigate(rel, vim.fn.line('.')) end)
   else
     schedule_follow()
@@ -242,7 +244,9 @@ end
 
 local function close_viewer(opts)
   opts = opts or {}
-  local shutdown = opts.shutdown or (vim.v.exiting ~= nil and vim.v.exiting ~= 0)
+  -- only VimLeavePre marks this as a shutdown; normal closure must still
+  -- close the window/buffer and clear autocmds
+  local shutdown = opts.shutdown == true
   S.closing = true -- guard against re-entrant TermClose from jobstop below
   -- invalidate any discovery/reload callback still in flight
   generation = generation + 1
@@ -303,10 +307,12 @@ local function setup_source_autocmds()
     group = AUGROUP,
     callback = function(ev)
       if not viewer_visible() or ev.buf == S.buf then return end
-      -- belt-and-suspenders with --watch: saving the reviewed file reloads its
-      -- diff so the panel stays current even if watch misses an event.
+      -- belt-and-suspenders with --watch: saving the desired viewer file
+      -- reloads its diff so the panel stays current even if watch misses an
+      -- event. Compare the requested target, not the last completed one, so
+      -- saving the previously displayed buffer cannot redirect the viewer.
       local rel = repo_relative(vim.api.nvim_buf_get_name(ev.buf), S.repo)
-      if rel and rel ~= '' and S.last_file == rel then
+      if rel and rel ~= '' and S.requested_file == rel then
         reload_session(rel)
       end
     end,
@@ -408,6 +414,7 @@ local function open_viewer()
   S.source_buf = src_buf
   S.last_follow_sig = nil
   S.last_file = rel
+  S.requested_file = rel
   generation = generation + 1
   local gen = generation
 

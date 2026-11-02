@@ -596,6 +596,42 @@ describe("handleToolCall — cancellation", () => {
     assert.equal(ui.pending.length, 0, "the active dialog was dismissed");
   });
 
+  it("does not allow an already-aborted call even with a session allowance", async () => {
+    const controller = new AbortController();
+    const session = new SessionState();
+    session.addAllow("file:/etc/hosts");
+    const { env, ui } = makeEnv({
+      config: { llm: LLM_OFF },
+      signal: controller.signal,
+      session,
+    });
+    controller.abort();
+
+    const result = await handleToolCall(file("/etc/hosts"), env);
+    assert.deepEqual(result, { allow: false, reason: CANCELLED_REASON });
+    assert.equal(ui.selectCalls.length, 0);
+  });
+
+  it("does not allow when the analyzer's verdict settles after abort", async () => {
+    const controller = new AbortController();
+    let release!: () => void;
+    const { env, ui } = makeEnv({
+      signal: controller.signal,
+      llmClient: () =>
+        new Promise<VerdictResult>((resolve) => {
+          release = () => resolve(verdict("none", "ALLOWED"));
+        }),
+    });
+
+    const pending = handleToolCall(bash("ls -la"), env);
+    while (!release) await tick();
+    controller.abort();
+    release();
+
+    assert.deepEqual(await pending, { allow: false, reason: CANCELLED_REASON });
+    assert.equal(ui.selectCalls.length, 0, "no dialog opens for the aborted call");
+  });
+
   it("drops a queued flow when the session aborts before its turn", async () => {
     const approvals = new ApprovalQueue();
     const controller = new AbortController();

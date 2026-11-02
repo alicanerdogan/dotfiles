@@ -7,7 +7,12 @@
         "@sveltejs/mcp"
       ],
       "description": "Svelte 5 and SvelteKit documentation, autofixer, and playground tools.",
-      "exposure": "direct"
+      "directTools": [
+        "get-documentation",
+        "list-sections",
+        "playground-link",
+        "svelte-autofixer"
+      ]
     }
   }
 }

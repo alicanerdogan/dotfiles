@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { MENU_OPTIONS, oneLine, runCommandPrompt, runPromptFlow, runSuggestionStep, type PromptFlowOptions, type SuggestionStepOptions } from "./prompt.ts";
+import { MENU_OPTIONS, displayReason, runCommandPrompt, runPromptFlow, runSuggestionStep, type PromptFlowOptions, type SuggestionStepOptions } from "./prompt.ts";
 import { SessionState } from "./session.ts";
 import { FakeUi } from "./testing.ts";
 import type { RuleKind } from "./rules.ts";
@@ -22,20 +22,18 @@ function flow(over: Partial<PromptFlowOptions> = {}): { opts: PromptFlowOptions;
   return { opts: { ...base, ...over }, ui, session, saved };
 }
 
-describe("oneLine", () => {
-  it("collapses multi-line commands to a single line", () => {
-    assert.equal(oneLine("blocked:\n  git push\n  --force"), "blocked: git push --force");
+describe("displayReason", () => {
+  it("preserves multi-line verdicts", () => {
+    assert.equal(displayReason("blocked:\n  git push\n  --force"), "blocked:\n  git push\n  --force");
   });
 
-  it("truncates overly long reasons with an ellipsis", () => {
+  it("keeps long verdicts intact", () => {
     const long = "x".repeat(500);
-    const out = oneLine(long);
-    assert.equal(out.length, 200);
-    assert.ok(out.endsWith("…"));
+    assert.equal(displayReason(long), long);
   });
 
-  it("leaves short reasons untouched", () => {
-    assert.equal(oneLine("path denied by rule: ~/.ssh (global)"), "path denied by rule: ~/.ssh (global)");
+  it("normalizes line endings and trims surrounding whitespace", () => {
+    assert.equal(displayReason("\n reason one\r\nreason two \n"), "reason one\nreason two");
   });
 });
 
@@ -196,12 +194,11 @@ describe("runPromptFlow — six options", () => {
     assert.equal(ui.selectCalls[0].title, "Immunity: test reason");
   });
 
-  it("menu title is one line even for multi-line reasons", async () => {
+  it("menu title keeps multi-line reasons intact", async () => {
     const { opts, ui } = flow({ reason: "blocked: find ~/repos\n  -maxdepth 1\n  -type d" });
     ui.selects.push(undefined);
     await runPromptFlow(opts);
-    assert.equal(ui.selectCalls[0].title, "Immunity: blocked: find ~/repos -maxdepth 1 -type d");
-    assert.ok(!ui.selectCalls[0].title.includes("\n"));
+    assert.equal(ui.selectCalls[0].title, "Immunity: blocked: find ~/repos\n  -maxdepth 1\n  -type d");
   });
 
   it("Allow for session → session statement, no rule write", async () => {

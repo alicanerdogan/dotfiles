@@ -93,4 +93,24 @@ describe("immunity extension entry — UI wiring", () => {
     assert.equal(selects.length, 1, "the approval dialog opened");
     assert.deepEqual(selects[0].options, ["Allow", "Deny"]);
   });
+
+  it("registers no handlers when DANGEROUSLY_SKIP_IMMUNITY=1", async () => {
+    const previous = process.env.DANGEROUSLY_SKIP_IMMUNITY;
+    process.env.DANGEROUSLY_SKIP_IMMUNITY = "1";
+    try {
+      const { default: immunity } = await import("./index.ts");
+      const registered: string[] = [];
+      const pi = {
+        on(event: string) {
+          registered.push(event);
+        },
+        events: { emit() {} },
+      };
+      immunity(pi as never);
+      assert.deepEqual(registered, [], "no event handlers are registered");
+    } finally {
+      if (previous === undefined) delete process.env.DANGEROUSLY_SKIP_IMMUNITY;
+      else process.env.DANGEROUSLY_SKIP_IMMUNITY = previous;
+    }
+  });
 });

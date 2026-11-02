@@ -85,6 +85,10 @@ function pathKindOf(value: string): "file" | "directory" {
 }
 
 export default function (pi: ExtensionAPI) {
+  // Deliberate escape hatch: register nothing at all (no session, tool-call,
+  // shutdown, or other handlers) when explicitly requested.
+  if (process.env.DANGEROUSLY_SKIP_IMMUNITY === "1") return;
+
   /** sibling-batch verdicts keyed by toolCallId; null = session-resolved, deliberately not started */
   const pendingVerdicts = new Map<string, Promise<VerdictResult> | null>();
   /** one approval flow at a time — concurrent tool calls must not compete for the UI */

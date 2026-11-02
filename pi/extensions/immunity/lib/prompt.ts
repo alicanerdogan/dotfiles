@@ -79,10 +79,10 @@ export const MENU_OPTIONS = [
   "Block globally",
 ] as const;
 
-/** Collapse a reason/command to a single display line (picker titles must not wrap). */
-export function oneLine(text: string, max = 200): string {
-  const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
+/** Reason text for the picker title: line breaks preserved and nothing cut off;
+ * the dialog wraps it to the terminal width. */
+export function displayReason(text: string): string {
+  return text.replace(/\r\n?/g, "\n").trim();
 }
 
 /** Follow-up for path rules: narrow (the file) or recursive (the containing/this directory). */
@@ -159,7 +159,7 @@ async function pathKindChoice(
 }
 
 export async function runPromptFlow(opts: PromptFlowOptions): Promise<PromptResult> {
-  const picked = await choose(opts.ui, `Immunity: ${oneLine(opts.reason)}`, [...MENU_OPTIONS], opts.signal);
+  const picked = await choose(opts.ui, `Immunity: ${displayReason(opts.reason)}`, [...MENU_OPTIONS], opts.signal);
   if (picked.cancelled) return cancelledFlow();
   if (picked.failed) return { action: "block", scope: "session" }; // broken prompt must not let the call through
   const choice = picked.choice;
@@ -250,7 +250,7 @@ export async function runCommandPrompt(opts: {
   signal?: AbortSignal;
 }): Promise<CommandPromptResult> {
   const options = opts.retryable ? [...COMMAND_OPTIONS, RETRY_ANALYSIS] : [...COMMAND_OPTIONS];
-  const picked = await choose(opts.ui, `Immunity: ${oneLine(opts.reason)}`, options, opts.signal);
+  const picked = await choose(opts.ui, `Immunity: ${displayReason(opts.reason)}`, options, opts.signal);
   if (picked.cancelled) return { action: "cancel" };
   if (picked.failed) return { action: "block" }; // broken prompt must not let the call through
   const choice = picked.choice;

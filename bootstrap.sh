@@ -7,8 +7,6 @@ if [[ $os == "Darwin" ]]; then
   ./sync.sh
   # install cli tools for mac
   xcode-select --install
-  # install oh my zsh
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)"
   # install brew
   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
   # install brew pkgs
@@ -19,7 +17,6 @@ if [[ $os == "Darwin" ]]; then
   fnm install --latest
 
   ## Download apps
-  # Alacritty
   # Firefox
   # Spotify
   # Chrome
